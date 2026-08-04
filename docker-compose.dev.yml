@@ -1,0 +1,55 @@
+# Spike dev stack for the QuixLakeHouse datasource plugin.
+#
+# Deliberately a *stock* Grafana image with dist/ bind-mounted, rather than a custom
+# build: that is exactly how a user installs a plugin, so if it loads here it loads
+# for them.
+#
+# This stack does NOT run its own lakehouse. It joins the already-running
+# integration network so it can reach `flight-sql:32010` directly. Bring that up
+# first from the repo root:
+#
+#   docker compose -f docker-compose.integration-test.yml up -d flight-sql
+#
+# Host port is 3002 because the integration stack's own Grafana already owns 3001.
+#
+# All ${...} values come from .env next to this file.
+
+services:
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    container_name: quixlakehouse-plugin-dev-grafana
+    ports:
+      - '${GRAFANA_PORT}:3000'
+    volumes:
+      # The built plugin. Grafana discovers plugins by directory name, and the
+      # directory must be named after the plugin id.
+      - ./dist:/var/lib/grafana/plugins/${PLUGIN_ID}
+      - ./provisioning:/etc/grafana/provisioning
+    environment:
+      # The plugin is unsigned during development. Grafana refuses to load unsigned
+      # plugins unless they are named here, and shows a warning banner even then.
+      # Signing is a later phase; see ARCHITECTURE.md.
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: ${PLUGIN_ID}
+      GF_LOG_FILTERS: plugin.${PLUGIN_ID}:debug
+      GF_LOG_LEVEL: info
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      # Keeps a fresh container from phoning home on boot.
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/health || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - lakehouse
+
+networks:
+  # The network created by the repo-root docker-compose.integration-test.yml.
+  # Declared external so this file neither creates nor removes it -- it must not be
+  # able to disturb the running stack.
+  lakehouse:
+    external: true
+    name: quixdatalaketimeseries_test-network

@@ -1,0 +1,32 @@
+# Provisions the QuixLakeHouse datasource so it exists on boot with no clicking.
+#
+# `uid` is fixed so integration tests can address the datasource directly
+# (POST /api/datasources/uid/quixlake-rest/health) without a name lookup.
+#
+# The token here is the local docker-compose integration token, which is already
+# public in the committed docker-compose.integration-test.yml. Never put a real
+# token in this file -- this repo is destined to be public.
+apiVersion: 1
+
+datasources:
+  - name: QuixLakeHouse
+    uid: quixlake-rest
+    # NOTE: `type` must equal the plugin id.
+    type: quix-quixlakehouse-datasource
+    access: proxy
+    # Grafana's standard URL field. The backend reads it from
+    # DataSourceInstanceSettings.URL, which is also what supplies TLS and proxy
+    # options. Point at the API ROOT -- no /grafana suffix; this plugin uses /query.
+    #
+    # Reachable as `api` because docker-compose.dev.yml joins the running
+    # integration network. From the host the same service is localhost:8080.
+    url: http://api:80
+    isDefault: false
+    orgId: 1
+    version: 1
+    editable: true
+    jsonData:
+      unionByName: true
+      timeoutSeconds: 60
+    secureJsonData:
+      token: test-token-123

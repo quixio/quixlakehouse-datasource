@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "QuixLakeHouse",
+  "id": "quix-quixlakehouse-datasource",
+  "category": "sql",
+  "metrics": true,
+  "backend": true,
+  "executable": "gpx_quixlakehouse",
+  "alerting": true,
+  "logs": false,
+  "tracing": false,
+  "annotations": false,
+  "streaming": false,
+  "info": {
+    "description": "Query the Quix Lakehouse (Apache Iceberg on object storage, DuckDB engine) from Grafana over Arrow Flight SQL.",
+    "author": {
+      "name": "Quix",
+      "url": "https://quix.io"
+    },
+    "keywords": ["sql", "iceberg", "duckdb", "timeseries", "lakehouse", "quix", "arrow", "flight"],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=12.3.0",
+    "plugins": []
+  }
+}
