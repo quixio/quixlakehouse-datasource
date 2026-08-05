@@ -46,3 +46,13 @@ ci/
 .idea
 
 .eslintcache
+
+# Internal planning docs. This repo is PUBLIC. The spec contains day-level
+# estimates, unannounced pricing/billing deliberations, and file:line references
+# into the private lakehouse repo, none of which should be world-readable. Keep the
+# working copy here so it travels with the plugin, but do not publish it. If a
+# public design doc is wanted, write a scrubbed one at docs/design.md instead.
+docs/internal/
+
+# Local credentials. This repo is PUBLIC -- .env carries live SDK/PAT tokens.
+.env

@@ -1,0 +1,50 @@
+# Quix application descriptor for a Grafana instance with the QuixLakeHouse
+# datasource plugin baked in.
+#
+# This file lives at the REPO ROOT, not in deploy/, on purpose: Quix uses the
+# application folder as the Docker build context, and deploy/Dockerfile needs the
+# whole repo (package.json, src/, pkg/) to build the plugin. An app.yaml inside
+# deploy/ would give the build a context containing only deploy/.
+name: quixlakehouse-grafana
+language: docker
+
+# Grafana never reads or writes blob storage. The bind is here because on Quix dev
+# it is the injection vehicle for the whole lakehouse bundle -- without it,
+# Quix__Lakehouse__Query__Url and __AuthToken simply do not appear in the
+# environment, and the entrypoint aborts. Confirmed behaviour, not a guess.
+blobStorage:
+  bind: true
+
+variables:
+  - name: GF_SECURITY_ADMIN_PASSWORD
+    inputType: Secret
+    description: Grafana admin password. Set this -- the image would otherwise use Grafana's default of "admin".
+    required: true
+
+  - name: GF_SERVER_ROOT_URL
+    inputType: FreeText
+    description: Public URL of this deployment, e.g. https://grafana-<workspace>.deployments-dev.quix.io. Grafana builds login redirects and share links from it; if it is wrong, sign-in appears broken in ways that look like a plugin fault.
+    required: true
+
+  - name: GF_LOG_LEVEL
+    inputType: FreeText
+    description: Grafana log level (debug, info, warn, error)
+    defaultValue: info
+    required: false
+
+  # --- BYOX only -------------------------------------------------------------
+  # On dev these four are auto-injected via the blobStorage bind above and must be
+  # left EMPTY here. On BYOX clusters nothing is auto-injected, so set them
+  # explicitly. The entrypoint reads the Quix__* names first and falls back to the
+  # QUIXLAKE_* names used for local runs.
+  - name: Quix__Lakehouse__Query__Url
+    inputType: FreeText
+    description: "BYOX only: public Lakehouse Query API base URL. Leave empty on dev (auto-injected). NOT the catalog URL."
+    required: false
+
+  - name: Quix__Lakehouse__Query__AuthToken
+    inputType: Secret
+    description: "BYOX only: bearer token for the Lakehouse Query API. Leave empty on dev (auto-injected). Do not use the SDK token -- cross-environment SDK tokens are rejected by the cluster-global Query Engine."
+    required: false
+
+dockerfile: deploy/Dockerfile
