@@ -27,4 +27,13 @@ datasources:
       # the browser never receives it back. This is the security gain over the
       # frontend-only JSON datasource it replaces.
       token: __QUIXLAKE_TOKEN__
-    editable: false
+    # Editable so the URL and token can be corrected from Connections > Data Sources
+    # without a redeploy. Provisioning still SEEDS the values from the environment,
+    # because a Quix deployment has no persisted Grafana database to create them in.
+    #
+    # Known consequence, and the reason this was false: Grafana re-applies
+    # provisioning at every boot, so a UI edit survives only until the container
+    # restarts. Making edits durable needs a persisted Grafana DB (GF_DATABASE_* to
+    # Postgres) -- the state mount is not an option here, since the entrypoint runs as
+    # uid 472 and cannot take ownership of it.
+    editable: true
