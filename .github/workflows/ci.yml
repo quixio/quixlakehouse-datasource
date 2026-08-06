@@ -63,9 +63,18 @@ jobs:
       - name: go test
         run: go test -race -coverprofile=coverage.out ./...
 
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      # Installed with `go install` rather than golangci-lint-action, deliberately.
+      # The action ships a prebuilt binary, and a binary built with go1.24 refuses to
+      # analyse a module targeting go1.25 ("the Go language version used to build
+      # golangci-lint is lower than the targeted Go version"). Building from source
+      # uses this runner's toolchain, so it tracks go.mod automatically and cannot
+      # drift out of step again.
+      #
+      # /v2 in the module path matches `version: '2'` in .golangci.yml.
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          golangci-lint run ./...
 
       # The plugin binary is what makes this datasource work server-side, so a build
       # break here is the whole feature, not a detail.
@@ -85,8 +94,13 @@ jobs:
       # Report-only for now (exit-code 0). Turning this into a blocking gate is a
       # deliberate decision that needs a triage pass first -- failing CI on
       # unactionable transitive CVEs trains people to ignore it.
+      # @master, not a pinned tag: aquasecurity/trivy-action's release tags are not
+      # reliably resolvable (0.28.0 does not exist as a ref, which failed the first
+      # run of this workflow). Their README recommends master. Acceptable here because
+      # the job is report-only -- a surprise from a floating action cannot break the
+      # build while exit-code stays 0.
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: .
