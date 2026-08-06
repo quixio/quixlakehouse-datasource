@@ -22,6 +22,106 @@ Grafana core is AGPLv3 and no code from it is used here.
 
 ---
 
+## Install
+
+Three routes, cheapest first. All of them need the plugin **allowlisted as unsigned** —
+it has no Grafana signature yet, so Grafana refuses to load it otherwise:
+
+```
+GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=quix-quixlakehouse-datasource
+```
+
+### 1. Prebuilt image (easiest)
+
+A stock Grafana with the plugin already baked in, published from this repo:
+
+```
+ghcr.io/quixio/quixlakehouse-grafana
+```
+
+The image sets `GF_PATHS_PROVISIONING`, the unsigned allowlist and an entrypoint that
+writes the datasource provisioning file from two environment variables — so a working
+Grafana is one `docker run`:
+
+```bash
+docker run -d -p 3000:3000 \
+  -e QUIXLAKE_URL='https://<your-lakehouse-query-host>' \
+  -e QUIXLAKE_TOKEN='<token or PAT>' \
+  -e GF_SECURITY_ADMIN_PASSWORD='<password>' \
+  ghcr.io/quixio/quixlakehouse-grafana:dev
+```
+
+On Quix Cloud the two lakehouse values are injected by the platform instead — see
+[deploy/README.md](deploy/README.md).
+
+#### Using it as a base image
+
+To add your own dashboards, plugins or config, `FROM` it and layer on top:
+
+```dockerfile
+FROM ghcr.io/quixio/quixlakehouse-grafana:dev
+
+# Dashboards as code. The entrypoint copies anything under the provisioning template
+# directory through untouched, so they survive the datasource rendering step.
+COPY dashboards/ /etc/grafana/provisioning-template/dashboards/
+
+# Anything else stock Grafana supports still applies.
+ENV GF_USERS_DEFAULT_THEME=light
+```
+
+Do **not** override `ENTRYPOINT` — it is what renders the datasource from
+`QUIXLAKE_URL` / `QUIXLAKE_TOKEN` before starting Grafana. Overriding it gives you a
+Grafana with the plugin installed but no datasource configured.
+
+Pin by digest rather than `:dev` for anything you care about. `:dev` tracks the current
+feature branch and moves under you, and an unchanged `FROM` line can be served from a
+build cache — so a retag alone does not guarantee you get new code:
+
+```dockerfile
+FROM ghcr.io/quixio/quixlakehouse-grafana@sha256:<digest>
+```
+
+Read the digest from the `publish-image` workflow run, or with
+`docker manifest inspect ghcr.io/quixio/quixlakehouse-grafana:dev`.
+
+### 2. Into an existing Grafana
+
+For a Grafana you already run. **No release zip is published yet** — until one is, build
+`dist/` yourself (see [Build](#build)) and copy it in. The directory name must equal the
+plugin id or Grafana will not discover it:
+
+```bash
+cp -r dist/ /var/lib/grafana/plugins/quix-quixlakehouse-datasource
+chmod +x /var/lib/grafana/plugins/quix-quixlakehouse-datasource/gpx_*
+# then restart grafana-server
+```
+
+Once releases exist, this becomes the usual one-liner on a stock image — no rebuild:
+
+```yaml
+environment:
+  GF_INSTALL_PLUGINS: "https://github.com/quixio/quixlakehouse-datasource/releases/download/v<x.y.z>/quix-quixlakehouse-datasource-<x.y.z>.zip;quix-quixlakehouse-datasource"
+  GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "quix-quixlakehouse-datasource"
+```
+
+That route needs egress to GitHub at boot. Where that is not guaranteed — Quix
+environments included — use route 1, which is self-contained.
+
+### 3. Grafana catalog
+
+Not available. Catalog publication requires a Grafana Labs signature, which also makes
+this installable on **Grafana Cloud** (unsigned plugins cannot run there at all). Nothing
+else changes for self-hosted users, who can already use routes 1 and 2 today.
+
+### Configuring the datasource
+
+However you install it, the datasource needs an **API URL** and an **API token** — see
+[Configuration](#configuration). Provisioning them is strongly preferred over the UI:
+Grafana's database is not persisted in a container deployment, so a hand-created
+datasource disappears on restart while a provisioned one is recreated every boot.
+
+---
+
 ## Prerequisites
 
 | Tool | Version used | Notes |
@@ -39,7 +139,7 @@ WSL or a `node:24-bookworm` container.
 ## Build
 
 ```bash
-cd quix-ts-datalake-grafana
+# from the repo root
 
 # Frontend -> dist/module.js, dist/plugin.json
 npm ci
@@ -69,10 +169,11 @@ network so it can reach `api:80` directly (the same service is `localhost:8080` 
 host).
 
 ```bash
-# 1. From the repo root: the lakehouse. `flight-sql` is NOT needed.
-docker compose -f docker-compose.integration-test.yml up -d
+# 1. The lakehouse. This compose file lives in the SEPARATE, private
+#    Quix.DataLake.Timeseries repo -- not here. `flight-sql` is NOT needed.
+docker compose -f docker-compose.integration-test.yml up -d api
 
-# 2. From this directory: Grafana with the plugin.
+# 2. From THIS repo: Grafana with the plugin.
 docker compose -f docker-compose.dev.yml up -d
 ```
 
@@ -82,6 +183,12 @@ stack's own Grafana already owns 3001.
 The datasource is pre-provisioned as **QuixLakeHouse**, uid `quixlake-rest`
 (`provisioning/datasources/quixlakehouse.yml`) pointing at `http://api:80`, so it
 exists on boot. Open it and click **Save & test**:
+
+> **Two different uids exist, deliberately.** This dev stack uses `quixlake-rest`, fixed
+> so integration tests can address it without a name lookup. The deployable image
+> (`deploy/provisioning/datasources/quixlakehouse.yml.tpl`) uses `quixlakehouse`. A
+> dashboard JSON hardcoding one will not resolve its datasource on the other — use a
+> dashboard variable if a dashboard has to work on both.
 
 ```
 Connected to the QuixLake API at http://api:80.
@@ -201,9 +308,12 @@ src/
   plugin.json             backend: true, alerting: true, category: sql
   module.ts, datasource.ts, types.ts
   components/ConfigEditor.tsx, QueryEditor.tsx
-provisioning/datasources/quixlakehouse.yml
+provisioning/datasources/quixlakehouse.yml   dev stack, uid quixlake-rest
+deploy/                   deployable image: Dockerfile, entrypoint, provisioning template
+.github/workflows/        ci.yml (lint/test/build) + publish-image.yml (GHCR)
 docker-compose.dev.yml
 .env                      PLUGIN_ID / GRAFANA_PORT / GRAFANA_VERSION
+                          NOT tracked -- gitignored, it holds live tokens
 ```
 
 UI is functional and unstyled by design — visual polish is a separate pass.
@@ -227,6 +337,8 @@ Full list in [ARCHITECTURE.md](ARCHITECTURE.md) §7. The ones you will hit first
 5. **Queries are attributed to `source="api"`**, not to Grafana.
 6. **Unsigned** — needs `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS` and Grafana shows a
    warning banner.
-7. **`linux/amd64` only**, no CI stage.
+7. **`linux/amd64` only.** CI (`.github/workflows/ci.yml`) runs lint, vet, typecheck and
+   build, but **there are no unit tests yet** — `go test ./...` finds no test files and
+   `test:ci` runs jest with `--passWithNoTests`, so both pass vacuously.
 8. **The whole result is buffered in memory** before the frame is built — no result-size
    ceiling yet. ARCHITECTURE.md §8.
