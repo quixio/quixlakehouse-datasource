@@ -21,7 +21,62 @@ export interface QuixLakeQuery extends DataQuery {
   format?: QueryFormat;
   timeColumn?: string;
   timeFormat?: TimeFormat;
+  /** Which editor is showing. The backend never reads this. */
+  editorMode?: EditorMode;
+  /** Builder state. Kept alongside rawSql, not instead of it -- see below. */
+  builder?: BuilderState;
 }
+
+export type EditorMode = 'builder' | 'code';
+
+/** Aggregates offered in the SELECT row. 'none' selects the raw column. */
+export type AggregateFn = 'none' | 'avg' | 'min' | 'max' | 'sum' | 'count';
+
+export type FilterOperator = '=' | '!=' | '>' | '<' | '>=' | '<=';
+
+export interface BuilderSelect {
+  column: string;
+  aggregate: AggregateFn;
+}
+
+export interface BuilderFilter {
+  key: string;
+  operator: FilterOperator;
+  value: string;
+}
+
+/**
+ * Visual builder state.
+ *
+ * IMPORTANT: the builder does not introduce a second query path. It generates
+ * `rawSql`, which is the only thing the backend ever executes. That keeps alert
+ * rules working -- an alert stores the generated SQL and evaluates it with no
+ * frontend in the loop, so a builder-only representation would simply not run there.
+ */
+export interface BuilderState {
+  table?: string;
+  timeColumn?: string;
+  select: BuilderSelect[];
+  filters: BuilderFilter[];
+  /** Emit GROUP BY $__timeGroup(timeColumn, interval), so buckets follow zoom. */
+  groupByTime: boolean;
+  /** Bucket width. $__interval means "whatever the panel is showing". */
+  interval: string;
+  /** Extra GROUP BY columns, e.g. a tag to split series by. */
+  groupByColumns: string[];
+  orderDescending: boolean;
+  limit?: number;
+}
+
+export const DEFAULT_BUILDER: BuilderState = {
+  select: [{ column: '', aggregate: 'avg' }],
+  filters: [],
+  groupByTime: true,
+  interval: '$__interval',
+  groupByColumns: [],
+  orderDescending: false,
+  limit: 1000,
+};
 
 /**
  * Starter query for a new panel.

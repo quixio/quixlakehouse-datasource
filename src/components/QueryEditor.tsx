@@ -1,13 +1,28 @@
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
-import { InlineField, Input, Select, TextArea } from '@grafana/ui';
+import { InlineField, Input, RadioButtonGroup, Select, Stack, TextArea } from '@grafana/ui';
 import React, { ChangeEvent } from 'react';
 
+import { buildSQL } from '../builder/sql';
 import { DataSource } from '../datasource';
-import { QueryFormat, QuixLakeDataSourceOptions, QuixLakeQuery, TimeFormat } from '../types';
+import {
+  BuilderState,
+  DEFAULT_BUILDER,
+  EditorMode,
+  QueryFormat,
+  QuixLakeDataSourceOptions,
+  QuixLakeQuery,
+  TimeFormat,
+} from '../types';
+import { QueryBuilder } from './QueryBuilder';
 
 type Props = QueryEditorProps<DataSource, QuixLakeQuery, QuixLakeDataSourceOptions>;
 
-const LABEL_WIDTH = 16;
+const LABEL_WIDTH = 14;
+
+const EDITOR_MODES: Array<SelectableValue<EditorMode>> = [
+  { label: 'Builder', value: 'builder' },
+  { label: 'Code', value: 'code' },
+];
 
 const FORMAT_OPTIONS: Array<SelectableValue<QueryFormat>> = [
   { label: 'Time series', value: 'time_series' },
@@ -23,17 +38,42 @@ const TIME_FORMAT_OPTIONS: Array<SelectableValue<TimeFormat>> = [
 ];
 
 /**
- * Raw-SQL query editor.
+ * Query editor with a visual builder and a raw-SQL mode.
  *
- * Spike scope: a plain textarea -- no Monaco, no autocomplete, no Builder/Raw
- * toggle. Unstyled on purpose; FrontEndEsthetic owns visual design.
+ * The builder generates `rawSql`; the backend only ever executes that. Keeping one
+ * query representation is what lets an alert rule evaluate a builder-authored query
+ * with no frontend present.
  *
- * "Time format" is not cosmetic. QuixLake tables usually store time as an INT64
- * epoch value (test_telemetry.timestamp is epoch milliseconds), and the backend
- * needs to know that both to expand $__timeFilter into an integer comparison rather
- * than a string one, and to convert the column into a real Grafana time field.
+ * Builder -> Code is one-way, by design and stated in the UI. Parsing arbitrary
+ * hand-edited DuckDB back into builder state is a real parser's job, and a partial
+ * one would silently drop clauses it did not understand -- worse than refusing.
+ * Grafana's own SQL editors make the same trade.
+ *
+ * "Time format" is not cosmetic: QuixLake stores time as an INT64 epoch, and the
+ * backend needs to know that both to compare $__timeFilter against an integer rather
+ * than a string, and to turn the column into a real Grafana time field.
  */
-export function QueryEditor({ query, onChange, onRunQuery }: Props) {
+export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const mode: EditorMode = query.editorMode ?? (query.rawSql ? 'code' : 'builder');
+  const builder: BuilderState = query.builder ?? DEFAULT_BUILDER;
+  const format = query.format ?? 'time_series';
+
+  const onModeChange = (next: EditorMode) => {
+    if (next === 'code') {
+      // Carry the generated SQL across so Code opens on what the builder produced,
+      // rather than an empty box that discards the work.
+      const generated = buildSQL(builder, format);
+      onChange({ ...query, editorMode: next, rawSql: generated || query.rawSql });
+      return;
+    }
+    onChange({ ...query, editorMode: next });
+  };
+
+  const onBuilderChange = (next: BuilderState) => {
+    // Regenerate on every edit so rawSql is always the source of truth for execution.
+    onChange({ ...query, builder: next, rawSql: buildSQL(next, format), editorMode: 'builder' });
+  };
+
   const onRawSqlChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     onChange({ ...query, rawSql: event.target.value });
   };
@@ -43,7 +83,12 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
   };
 
   const onFormatChange = (selected: SelectableValue<QueryFormat>) => {
-    onChange({ ...query, format: selected.value ?? 'time_series' });
+    const nextFormat = selected.value ?? 'time_series';
+    const patch: Partial<QuixLakeQuery> = { format: nextFormat };
+    if (mode === 'builder') {
+      patch.rawSql = buildSQL(builder, nextFormat);
+    }
+    onChange({ ...query, ...patch });
     onRunQuery();
   };
 
@@ -53,25 +98,40 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
   };
 
   return (
-    <>
-      <InlineField
-        label="SQL"
-        labelWidth={LABEL_WIDTH}
-        grow
-        interactive
-        tooltip="DuckDB SQL. Macros: $__timeFilter(col), $__timeFrom(), $__timeTo(), $__timeGroup(col, 1m). Expanded in the backend, so they also work in alert rules."
-      >
-        <TextArea
-          id="query-editor-raw-sql"
-          rows={6}
-          value={query.rawSql ?? ''}
-          placeholder={
-            'SELECT timestamp, speed_kmh FROM test_telemetry\nWHERE $__timeFilter(timestamp)\nORDER BY timestamp'
-          }
-          onChange={onRawSqlChange}
-          onBlur={onRunQuery}
+    <Stack direction="column" gap={0.5}>
+      <Stack direction="row" justifyContent="flex-end">
+        <RadioButtonGroup options={EDITOR_MODES} value={mode} size="sm" onChange={onModeChange} />
+      </Stack>
+
+      {mode === 'builder' ? (
+        <QueryBuilder
+          builder={builder}
+          format={format}
+          datasource={datasource}
+          generatedSQL={buildSQL(builder, format)}
+          onChange={onBuilderChange}
+          onRunQuery={onRunQuery}
         />
-      </InlineField>
+      ) : (
+        <InlineField
+          label="SQL"
+          labelWidth={LABEL_WIDTH}
+          grow
+          interactive
+          tooltip="DuckDB SQL. Macros: $__timeFilter(col), $__timeFrom(), $__timeTo(), $__timeGroup(col, $__interval). Expanded in the backend, so they also work in alert rules."
+        >
+          <TextArea
+            id="query-editor-raw-sql"
+            rows={8}
+            value={query.rawSql ?? ''}
+            placeholder={
+              'SELECT $__timeGroup(ts_ms, $__interval) AS time, avg(speed) AS speed\nFROM car_telemetry\nWHERE $__timeFilter(ts_ms) AND year = \'2026\'\nGROUP BY 1 ORDER BY 1 LIMIT 1000'
+            }
+            onChange={onRawSqlChange}
+            onBlur={onRunQuery}
+          />
+        </InlineField>
+      )}
 
       <InlineField
         label="Format"
@@ -82,7 +142,7 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         <Select
           inputId="query-editor-format"
           options={FORMAT_OPTIONS}
-          value={query.format ?? 'time_series'}
+          value={format}
           onChange={onFormatChange}
           width={28}
         />
@@ -92,12 +152,12 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         label="Time column"
         labelWidth={LABEL_WIDTH}
         interactive
-        tooltip="Column to use as the time field. Leave empty to auto-detect a column named time/timestamp/ts/ts_ms/datetime/date/event_time."
+        tooltip="Column promoted to the frame's time field. Leave empty to auto-detect a column named time/timestamp/ts/ts_ms/datetime/date/event_time. Empty with no matching name yields a plain number, and the panel will not plot."
       >
         <Input
           id="query-editor-time-column"
           value={query.timeColumn ?? ''}
-          placeholder="timestamp (auto-detected if empty)"
+          placeholder="time (auto-detected if empty)"
           onChange={onTimeColumnChange}
           onBlur={onRunQuery}
           width={28}
@@ -118,6 +178,6 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
           width={28}
         />
       </InlineField>
-    </>
+    </Stack>
   );
 }
