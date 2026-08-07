@@ -1,0 +1,149 @@
+- generic [ref=f6e8]:
+  - link "Skip to main content" [ref=f6e9] [cursor=pointer]:
+    - /url: "#pageContent"
+  - generic [ref=f6e11]:
+    - generic [ref=f6e12]:
+      - generic [ref=f6e13]:
+        - link [ref=f6e14] [cursor=pointer]:
+          - /url: /
+          - img "Grafana" [ref=f6e15]
+        - generic [ref=f6e16]: Grafana
+      - button "Undock menu" [ref=f6e17] [cursor=pointer]
+      - button "Close menu" [ref=f6e20] [cursor=pointer]
+    - navigation [ref=f6e23]:
+      - list "Navigation" [ref=f6e27]:
+        - listitem [ref=f6e28]:
+          - link [ref=f6e32] [cursor=pointer]:
+            - /url: /
+            - paragraph [ref=f6e37]: Home
+        - listitem [ref=f6e38]:
+          - generic [ref=f6e39]:
+            - link [ref=f6e42] [cursor=pointer]:
+              - /url: /bookmarks
+              - paragraph [ref=f6e47]: Bookmarks
+            - 'button "Expand section: Bookmarks" [ref=f6e49] [cursor=pointer]'
+        - listitem [ref=f6e52]:
+          - generic [ref=f6e53]:
+            - link [ref=f6e56] [cursor=pointer]:
+              - /url: /dashboards?starred
+              - paragraph [ref=f6e61]: Starred
+            - 'button "Expand section: Starred" [ref=f6e63] [cursor=pointer]'
+        - listitem [ref=f6e66]:
+          - generic [ref=f6e67]:
+            - link [ref=f6e70] [cursor=pointer]:
+              - /url: /dashboards
+              - paragraph [ref=f6e75]: Dashboards
+            - 'button "Expand section: Dashboards" [ref=f6e77] [cursor=pointer]'
+        - listitem [ref=f6e80]:
+          - link [ref=f6e84] [cursor=pointer]:
+            - /url: /explore
+            - paragraph [ref=f6e89]: Explore
+        - listitem [ref=f6e90]:
+          - generic [ref=f6e91]:
+            - link [ref=f6e94] [cursor=pointer]:
+              - /url: /drilldown
+              - paragraph [ref=f6e102]: Drilldown
+            - 'button "Expand section: Drilldown" [ref=f6e104] [cursor=pointer]'
+        - listitem [ref=f6e107]:
+          - generic [ref=f6e108]:
+            - link [ref=f6e111] [cursor=pointer]:
+              - /url: /alerting
+              - paragraph [ref=f6e116]: Alerting
+            - 'button "Expand section: Alerting" [ref=f6e118] [cursor=pointer]'
+        - listitem [ref=f6e121]:
+          - generic [ref=f6e122]:
+            - link [ref=f6e125] [cursor=pointer]:
+              - /url: /connections
+              - paragraph [ref=f6e130]: Connections
+            - 'button "Expand section: Connections" [ref=f6e132] [cursor=pointer]'
+        - listitem [ref=f6e135]:
+          - generic [ref=f6e136]:
+            - link [ref=f6e139] [cursor=pointer]:
+              - /url: /admin
+              - paragraph [ref=f6e144]: Administration
+            - 'button "Expand section: Administration" [ref=f6e146] [cursor=pointer]'
+  - banner [ref=f6e149]:
+    - generic [ref=f6e150]:
+      - navigation "Breadcrumbs" [ref=f6e152]:
+        - list [ref=f6e153]:
+          - listitem [ref=f6e154]:
+            - link "Dashboards" [ref=f6e155] [cursor=pointer]:
+              - /url: /dashboards
+          - listitem [ref=f6e159]:
+            - generic "New dashboard" [ref=f6e160]
+      - generic [ref=f6e161]:
+        - generic [ref=f6e163]:
+          - button "Search..." [ref=f6e167] [cursor=pointer]
+          - generic [ref=f6e168]: ctrl+k
+        - button "New" [ref=f6e170] [cursor=pointer]
+        - button "Help" [ref=f6e176] [cursor=pointer]
+        - button "Profile" [ref=f6e180] [cursor=pointer]:
+          - img "User avatar" [ref=f6e181]
+  - main [ref=f6e184]:
+    - log [ref=f6e185]
+    - generic [ref=f6e188]:
+      - generic [ref=f6e190]:
+        - generic [ref=f6e191]:
+          - generic [ref=f6e192]:
+            - generic [ref=f6e193]:
+              - button "Move 3h backward" [ref=f6e194] [cursor=pointer]
+              - 'button "Time range selected: Last 6 hours" [ref=f6e197] [cursor=pointer]':
+                - generic [ref=f6e200]: Last 6 hours
+              - button "Move time range forwards" [ref=f6e205] [cursor=pointer]
+              - button "Zoom out time range" [ref=f6e208] [cursor=pointer]
+            - generic [ref=f6e211]:
+              - button "Refresh" [ref=f6e212] [cursor=pointer]
+              - button "Auto refresh turned off. Choose refresh time interval" [ref=f6e218] [cursor=pointer]
+          - button "Save" [ref=f6e222] [cursor=pointer]
+        - button "Add variable" [ref=f6e226] [cursor=pointer]
+      - generic [ref=f6e229]:
+        - generic [ref=f6e231]:
+          - region [ref=f6e240]:
+            - heading "New panel" [level=2] [ref=f6e243]
+            - generic [ref=f6e245]:
+              - generic: No visualization configured
+              - generic [ref=f6e246]:
+                - button "Configure visualization" [ref=f6e248] [cursor=pointer]
+                - button "Use library panel" [ref=f6e253] [cursor=pointer]
+          - generic [ref=f6e260]:
+            - button "Add panel" [ref=f6e261] [cursor=pointer]
+            - button "Group panels" [ref=f6e265] [cursor=pointer]
+        - generic [ref=f6e269]:
+          - generic [ref=f6e272]:
+            - generic [ref=f6e273]:
+              - generic [ref=f6e274]:
+                - button "Go back" [ref=f6e275] [cursor=pointer]
+                - generic [ref=f6e278]: Panel
+                - button "Undock" [ref=f6e279] [cursor=pointer]
+                - button "Close" [ref=f6e282] [cursor=pointer]
+              - generic [ref=f6e285]:
+                - button "Duplicate" [ref=f6e286] [cursor=pointer]
+                - button "Copy" [ref=f6e290] [cursor=pointer]
+                - button "Delete" [ref=f6e294] [cursor=pointer]
+            - generic [ref=f6e301]:
+              - button "Edit visualization" [ref=f6e303] [cursor=pointer]
+              - generic [ref=f6e307]:
+                - generic [ref=f6e308]:
+                  - generic [ref=f6e309]: Title
+                  - textbox "Title" [active] [ref=f6e317]: New panel
+                - generic [ref=f6e318]:
+                  - generic [ref=f6e319]: Description
+                  - textbox "Description" [ref=f6e325]
+                - generic [ref=f6e326]:
+                  - generic [ref=f6e327]: Transparent background
+                  - generic [ref=f6e333]:
+                    - switch "Transparent background" [ref=f6e334]
+                    - generic [ref=f6e335] [cursor=pointer]
+              - generic [ref=f6e337] [cursor=pointer]:
+                - heading "Repeat options" [level=3] [ref=f6e338]
+                - button "Expand Repeat options category" [ref=f6e339]
+              - heading "Show / hide rules" [level=3] [ref=f6e344]
+          - generic [ref=f6e351]:
+            - generic [ref=f6e352]:
+              - button "Add" [ref=f6e353] [cursor=pointer]
+              - button "Options" [ref=f6e357] [cursor=pointer]
+              - button "Give feedback on the new dashboard editing experience" [ref=f6e361] [cursor=pointer]
+              - button "Code" [ref=f6e365] [cursor=pointer]
+            - generic [ref=f6e369]:
+              - button "Outline" [ref=f6e370] [cursor=pointer]
+              - button "Hide" [ref=f6e375] [cursor=pointer]

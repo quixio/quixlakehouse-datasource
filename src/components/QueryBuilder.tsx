@@ -5,10 +5,13 @@ import React, { ChangeEvent, useCallback, useEffect, useState } from 'react';
 import { DataSource } from '../datasource';
 import { AggregateFn, BuilderState, FilterOperator, QueryFormat } from '../types';
 
-// 16 × 8 px = 128 px. "ORDER BY TIME" (13 chars) fits with ~12 px of breathing room
-// on either side; at LABEL_WIDTH=14 (112 px) it was nearly flush. All rows share this
-// constant so controls form a single clean vertical column down the form.
-const LABEL_WIDTH = 16;
+// 18 × 8 px = 144 px, of which 128 px is content (the label has 8 px padding each
+// side). Measured in the browser, the longest labels -- "Generated SQL", "TIME COLUMN"
+// and "Time format" -- render at exactly 112 px. At LABEL_WIDTH=16 that left 112 px of
+// content for 112 px of text: no margin at all, and because the label is
+// `white-space: normal` it wrapped to two lines rather than overflowing. 18 leaves
+// 16 px of slack. All rows share this constant so controls form one clean column.
+const LABEL_WIDTH = 18;
 
 const AGGREGATE_OPTIONS: Array<SelectableValue<AggregateFn>> = [
   { label: 'mean', value: 'avg' },

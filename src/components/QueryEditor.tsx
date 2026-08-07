@@ -18,9 +18,9 @@ import { QueryBuilder } from './QueryBuilder';
 
 type Props = QueryEditorProps<DataSource, QuixLakeQuery, QuixLakeDataSourceOptions>;
 
-// Matches QueryBuilder's LABEL_WIDTH (16 × 8 px = 128 px) so the Format / Time
-// column / Time format rows below the builder share the same label gutter.
-const LABEL_WIDTH = 16;
+// Must match QueryBuilder's LABEL_WIDTH so the Format / Time column / Time format
+// rows below the builder share one label gutter. See the note there for why 18.
+const LABEL_WIDTH = 18;
 
 const EDITOR_MODES: Array<SelectableValue<EditorMode>> = [
   { label: 'Builder', value: 'builder' },
