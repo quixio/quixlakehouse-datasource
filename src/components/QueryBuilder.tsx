@@ -74,6 +74,23 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
     [builder, onChange]
   );
 
+  const [tables, setTables] = useState<Array<SelectableValue<string>>>([]);
+  const [loadingTables, setLoadingTables] = useState(false);
+
+  // Lazily, on menu open: a panel does not need the catalog listing until someone
+  // actually goes looking for a table.
+  const loadTables = async () => {
+    setLoadingTables(true);
+    try {
+      const res = await datasource.getResource('tables');
+      setTables((res?.tables ?? []).map((t: string) => ({ label: t, value: t })));
+    } catch (_e) {
+      setTables([]);
+    } finally {
+      setLoadingTables(false);
+    }
+  };
+
   return (
     <Stack direction="column" gap={0.5}>
       <InlineFieldRow>
@@ -81,14 +98,22 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           label="FROM"
           labelWidth={LABEL_WIDTH}
           interactive
-          tooltip="Lakehouse table name, e.g. rawdata or car_telemetry."
+          tooltip="Lakehouse table. Loaded from the catalog when the menu opens."
         >
-          <Input
-            value={builder.table ?? ''}
+          <Select
+            options={tables}
+            value={builder.table ? { label: builder.table, value: builder.table } : null}
             placeholder="select table"
             width={30}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => set({ table: e.target.value })}
-            onBlur={onRunQuery}
+            allowCustomValue
+            isLoading={loadingTables}
+            onOpenMenu={loadTables}
+            onChange={(v) => {
+              // Clear the partition filters: they name columns of the previous table
+              // and would silently become predicates that match nothing.
+              set({ table: v?.value ?? '', filters: [] });
+              onRunQuery();
+            }}
           />
         </InlineField>
         <InlineField

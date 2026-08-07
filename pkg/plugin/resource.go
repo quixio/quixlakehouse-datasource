@@ -32,6 +32,8 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		return d.handlePartitionValues(ctx, req, sender)
 	case path == pathPartitionInfo && req.Method == http.MethodGet:
 		return d.handlePartitionInfo(ctx, req, sender)
+	case path == pathTables && req.Method == http.MethodGet:
+		return d.handleTables(ctx, sender)
 	default:
 		return sendJSON(sender, http.StatusNotFound, map[string]string{
 			"error": "no such resource: " + req.Method + " " + path,
@@ -110,6 +112,23 @@ func (d *Datasource) handlePartitionValues(ctx context.Context, req *backend.Cal
 		Values: values,
 		Count:  len(values),
 	})
+}
+
+// handleTables lists catalog tables for the builder's FROM dropdown.
+func (d *Datasource) handleTables(ctx context.Context, sender backend.CallResourceResponseSender) error {
+	tables, err := d.client.Tables(ctx)
+	if err != nil {
+		msg, _ := classifyError(err, d.baseURL)
+		log.DefaultLogger.Warn("tables lookup failed", "err", err)
+
+		status := http.StatusBadGateway
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 {
+			status = apiErr.StatusCode
+		}
+		return sendJSON(sender, status, map[string]string{"error": msg})
+	}
+	return sendJSON(sender, http.StatusOK, map[string]any{"tables": tables})
 }
 
 // handlePartitionInfo lists the columns a table is partitioned by, so the query

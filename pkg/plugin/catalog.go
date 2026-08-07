@@ -28,7 +28,21 @@ const (
 	pathPartitionValues = "/partition-values"
 	pathPartitionInfo   = "/partition-info"
 	pathPartitions      = "/partitions"
+	pathTables          = "/tables"
 )
+
+type tablesResponse struct {
+	Tables []string `json:"tables"`
+}
+
+// Tables lists the tables in the catalog, for the builder's FROM dropdown.
+func (c *RESTClient) Tables(ctx context.Context) ([]string, error) {
+	var out tablesResponse
+	if err := c.getJSON(ctx, pathTables, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Tables, nil
+}
 
 // partitionInfoResponse is the shape of GET /partition-info. Only the fields we use
 // are declared; the endpoint also returns counts it explicitly refuses to compute
