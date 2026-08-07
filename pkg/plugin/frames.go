@@ -28,7 +28,10 @@ import (
 type recordStream interface {
 	Schema() *arrow.Schema
 	Next() bool
-	Record() arrow.Record
+	// arrow.RecordBatch, not arrow.Record: the latter is deprecated in arrow-go v18
+	// to remove the ambiguity of "record" meaning a single row elsewhere. They are
+	// the same type, so *ipc.Reader still satisfies this.
+	Record() arrow.RecordBatch
 	Err() error
 }
 
@@ -264,7 +267,7 @@ func emptyFrame(opts frameOptions) *data.Frame {
 func recordsToFrame(reader recordStream, opts frameOptions) (*data.Frame, error) {
 	schema := reader.Schema()
 	if schema == nil {
-		return nil, fmt.Errorf("Arrow stream returned no schema")
+		return nil, fmt.Errorf("no schema in the Arrow stream")
 	}
 
 	fields := schema.Fields()
