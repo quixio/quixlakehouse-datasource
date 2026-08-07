@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.2 - unreleased
+
+- Visual query builder with a Builder/Code toggle, modelled on Grafana's InfluxQL
+  editor. `GROUP BY time` defaults to `$__interval`, so buckets follow dashboard zoom.
+  The builder generates `rawSql`, so builder-authored queries still evaluate in alert
+  rules, which have no frontend.
+- WHERE rows populate from catalog metadata: partition columns from
+  `/partition-info`, values from `/partition-values`. Both are served through a
+  backend resource handler, since the API token never reaches the browser.
+- Dashboard variables via `partition_values(table, column, year=2023)`.
+
 ## 0.0.1 - 2026-08-07
 
 First tagged release. Pre-1.0 deliberately: alerting is not yet demonstrated end to

@@ -1,11 +1,14 @@
 import { SelectableValue } from '@grafana/data';
-import { Button, IconButton, InlineField, InlineFieldRow, Input, Select, Stack, TextArea } from '@grafana/ui';
+import { Alert, IconButton, InlineField, InlineFieldRow, Input, Select, Stack, TextArea } from '@grafana/ui';
 import React, { ChangeEvent, useCallback, useState } from 'react';
 
 import { DataSource } from '../datasource';
 import { AggregateFn, BuilderState, FilterOperator, QueryFormat } from '../types';
 
-const LABEL_WIDTH = 14;
+// 16 × 8 px = 128 px. "ORDER BY TIME" (13 chars) fits with ~12 px of breathing room
+// on either side; at LABEL_WIDTH=14 (112 px) it was nearly flush. All rows share this
+// constant so controls form a single clean vertical column down the form.
+const LABEL_WIDTH = 16;
 
 const AGGREGATE_OPTIONS: Array<SelectableValue<AggregateFn>> = [
   { label: 'mean', value: 'avg' },
@@ -107,6 +110,9 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
       {/* SELECT */}
       {builder.select.map((sel, i) => (
         <InlineFieldRow key={`sel-${i}`}>
+          {/* Empty label on rows after the first is intentional: it indents the control
+              to align with the first row, visually grouping all SELECT fields together.
+              This is the same pattern Grafana's InfluxQL editor uses. */}
           <InlineField label={i === 0 ? 'SELECT' : ''} labelWidth={LABEL_WIDTH}>
             <Input
               value={sel.column}
@@ -133,22 +139,26 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
               }}
             />
           </InlineField>
-          <IconButton
-            name="times"
-            aria-label="remove field"
-            onClick={() => {
-              const next = builder.select.filter((_, j) => j !== i);
-              set({ select: next.length > 0 ? next : [{ column: '', aggregate: 'avg' }] });
-              onRunQuery();
-            }}
-          />
-          {i === builder.select.length - 1 && (
+          {/* Stack gives the × / + chips an explicit 4 px gap (gap={0.5} = 0.5 × 8 px)
+              and centres them vertically against the adjacent input. */}
+          <Stack direction="row" gap={0.5} alignItems="center">
             <IconButton
-              name="plus"
-              aria-label="add field"
-              onClick={() => set({ select: [...builder.select, { column: '', aggregate: 'avg' }] })}
+              name="times"
+              aria-label="remove field"
+              onClick={() => {
+                const next = builder.select.filter((_, j) => j !== i);
+                set({ select: next.length > 0 ? next : [{ column: '', aggregate: 'avg' }] });
+                onRunQuery();
+              }}
             />
-          )}
+            {i === builder.select.length - 1 && (
+              <IconButton
+                name="plus"
+                aria-label="add field"
+                onClick={() => set({ select: [...builder.select, { column: '', aggregate: 'avg' }] })}
+              />
+            )}
+          </Stack>
         </InlineFieldRow>
       ))}
 
@@ -172,6 +182,10 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           onRunQuery={onRunQuery}
         />
       ))}
+      {/* The add-filter affordance is an IconButton chip, matching SELECT's + chip so
+          all add/remove actions in the form use the same visual weight. The InlineField
+          label ("WHERE" when no filters exist, empty otherwise) provides the label that
+          a standalone Button would have had as its text. */}
       <InlineFieldRow>
         <InlineField
           label={builder.filters.length === 0 ? 'WHERE' : ''}
@@ -179,14 +193,11 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           interactive
           tooltip="Partition filters. Add at least one: an unpartitioned scan is the usual reason a query never returns."
         >
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="plus"
+          <IconButton
+            name="plus"
+            aria-label="add filter"
             onClick={() => set({ filters: [...builder.filters, { key: '', operator: '=', value: '' }] })}
-          >
-            Add filter
-          </Button>
+          />
         </InlineField>
       </InlineFieldRow>
 
@@ -227,6 +238,7 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
         )}
         <InlineField
           label="split by"
+          labelWidth={LABEL_WIDTH}
           interactive
           tooltip="Extra GROUP BY columns, comma separated. Each distinct value becomes its own series."
         >
@@ -266,6 +278,7 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
         </InlineField>
         <InlineField
           label="LIMIT"
+          labelWidth={LABEL_WIDTH}
           interactive
           tooltip="Always set. It is the backstop when every other bound has been edited away."
         >
@@ -291,13 +304,11 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
       </InlineField>
 
       {/* Only warn once the form has been started. Showing this on an empty builder
-          scolds the user for not having typed anything yet. */}
+          scolds the user for not having typed anything yet. Alert gives the message
+          the correct Grafana warning colour and accessible role="alert" — a bare
+          <span> is invisible to screen readers and blends into body text. */}
       {format === 'time_series' && !!builder.table && !builder.timeColumn && (
-        <InlineFieldRow>
-          <InlineField label="" labelWidth={LABEL_WIDTH}>
-            <span>A time series needs a time column, or the panel will not plot.</span>
-          </InlineField>
-        </InlineFieldRow>
+        <Alert severity="warning" title="A time series needs a time column, or the panel will not plot." />
       )}
     </Stack>
   );
@@ -413,7 +424,10 @@ function FilterRow({ index, filter, table, datasource, onChange, onRemove, onRun
           }}
         />
       </InlineField>
-      <IconButton name="times" aria-label="remove filter" onClick={onRemove} />
+      {/* Same Stack wrapper as SELECT chips: 4 px gap, vertically centred. */}
+      <Stack direction="row" gap={0.5} alignItems="center">
+        <IconButton name="times" aria-label="remove filter" onClick={onRemove} />
+      </Stack>
     </InlineFieldRow>
   );
 }
