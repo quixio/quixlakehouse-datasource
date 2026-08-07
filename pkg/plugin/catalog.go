@@ -26,8 +26,42 @@ import (
 // it before the plugin's own timeout, so raising timeoutSeconds does not help.
 const (
 	pathPartitionValues = "/partition-values"
+	pathPartitionInfo   = "/partition-info"
 	pathPartitions      = "/partitions"
 )
+
+// partitionInfoResponse is the shape of GET /partition-info. Only the fields we use
+// are declared; the endpoint also returns counts it explicitly refuses to compute
+// ("Unknown (use partitions endpoint for details)"), which is why they are ignored.
+type partitionInfoResponse struct {
+	TableName        string   `json:"table_name"`
+	IsPartitioned    bool     `json:"is_partitioned"`
+	PartitionColumns []string `json:"partition_columns"`
+}
+
+// PartitionColumns lists the columns a table is partitioned by, in spec order.
+//
+// This is what turns the query builder's WHERE row from a free-text box into a
+// dropdown. It matters more here than in a normal SQL builder: filtering on a
+// partition column prunes files before anything is read, while filtering on an
+// ordinary column does not, so knowing which is which is the difference between a
+// query that returns and one the ingress kills.
+func (c *RESTClient) PartitionColumns(ctx context.Context, table string) ([]string, error) {
+	if strings.TrimSpace(table) == "" {
+		return nil, fmt.Errorf("table is required")
+	}
+	q := url.Values{}
+	q.Set("table", table)
+
+	var out partitionInfoResponse
+	if err := c.getJSON(ctx, pathPartitionInfo, q, &out); err != nil {
+		return nil, err
+	}
+	if !out.IsPartitioned {
+		return []string{}, nil
+	}
+	return out.PartitionColumns, nil
+}
 
 // partitionValuesResponse is the documented shape of GET /partition-values
 // (quix-ts-datalake-api/main.py:851-856).

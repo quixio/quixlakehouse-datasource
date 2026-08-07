@@ -30,6 +30,8 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 	switch {
 	case path == pathPartitionValues && req.Method == http.MethodGet:
 		return d.handlePartitionValues(ctx, req, sender)
+	case path == pathPartitionInfo && req.Method == http.MethodGet:
+		return d.handlePartitionInfo(ctx, req, sender)
 	default:
 		return sendJSON(sender, http.StatusNotFound, map[string]string{
 			"error": "no such resource: " + req.Method + " " + path,
@@ -107,6 +109,46 @@ func (d *Datasource) handlePartitionValues(ctx context.Context, req *backend.Cal
 		Column: column,
 		Values: values,
 		Count:  len(values),
+	})
+}
+
+// handlePartitionInfo lists the columns a table is partitioned by, so the query
+// builder can offer them instead of asking the user to remember them.
+func (d *Datasource) handlePartitionInfo(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	params, err := url.ParseQuery(req.URL)
+	if err != nil {
+		return sendJSON(sender, http.StatusBadRequest, map[string]string{
+			"error": "could not parse query parameters: " + err.Error(),
+		})
+	}
+	params = stripPathFromQuery(params)
+
+	table := params.Get("table")
+	if table == "" {
+		return sendJSON(sender, http.StatusBadRequest, map[string]string{"error": "'table' is required"})
+	}
+
+	columns, err := d.client.PartitionColumns(ctx, table)
+	if err != nil {
+		if errors.Is(err, ErrCatalogUnsupported) {
+			return sendJSON(sender, http.StatusNotImplemented, map[string]string{
+				"error": "the connected catalog does not support /partition-info",
+			})
+		}
+		msg, _ := classifyError(err, d.baseURL)
+		log.DefaultLogger.Warn("partition-info failed", "table", table, "err", err)
+
+		status := http.StatusBadGateway
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 {
+			status = apiErr.StatusCode
+		}
+		return sendJSON(sender, status, map[string]string{"error": msg})
+	}
+
+	return sendJSON(sender, http.StatusOK, map[string]any{
+		"table":   table,
+		"columns": columns,
 	})
 }
 

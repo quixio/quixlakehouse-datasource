@@ -21,6 +21,11 @@ const OPERATOR_OPTIONS: Array<SelectableValue<FilterOperator>> = ['=', '!=', '>'
   value: o as FilterOperator,
 }));
 
+const ORDER_OPTIONS: Array<SelectableValue<string>> = [
+  { label: 'ascending', value: 'asc' },
+  { label: 'descending', value: 'desc' },
+];
+
 const INTERVAL_OPTIONS: Array<SelectableValue<string>> = [
   { label: '$__interval (follows zoom)', value: '$__interval' },
   { label: '1s', value: '1s' },
@@ -245,15 +250,16 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
       {/* ORDER BY / LIMIT */}
       <InlineFieldRow>
         <InlineField label="ORDER BY TIME" labelWidth={LABEL_WIDTH}>
+          {/* String values, not booleans: Select matches an option by value, and a
+              `false` value is indistinguishable from "nothing selected", so the
+              control rendered as an empty "Choose" even though the default was
+              ascending and the generated SQL was correct. */}
           <Select
-            options={[
-              { label: 'ascending', value: false },
-              { label: 'descending', value: true },
-            ]}
-            value={builder.orderDescending}
+            options={ORDER_OPTIONS}
+            value={builder.orderDescending ? 'desc' : 'asc'}
             width={20}
             onChange={(v) => {
-              set({ orderDescending: !!v.value });
+              set({ orderDescending: v.value === 'desc' });
               onRunQuery();
             }}
           />
@@ -284,7 +290,9 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
         <TextArea readOnly rows={Math.min(10, Math.max(3, generatedSQL.split('\n').length))} value={generatedSQL} />
       </InlineField>
 
-      {format === 'time_series' && !builder.timeColumn && (
+      {/* Only warn once the form has been started. Showing this on an empty builder
+          scolds the user for not having typed anything yet. */}
+      {format === 'time_series' && !!builder.table && !builder.timeColumn && (
         <InlineFieldRow>
           <InlineField label="" labelWidth={LABEL_WIDTH}>
             <span>A time series needs a time column, or the panel will not plot.</span>
@@ -313,6 +321,32 @@ interface FilterRowProps {
 function FilterRow({ index, filter, table, datasource, onChange, onRemove, onRunQuery }: FilterRowProps) {
   const [options, setOptions] = useState<Array<SelectableValue<string>>>([]);
   const [loading, setLoading] = useState(false);
+  const [columns, setColumns] = useState<Array<SelectableValue<string>>>([]);
+  const [loadingColumns, setLoadingColumns] = useState(false);
+
+  /**
+   * Loads the table's partition columns.
+   *
+   * Worth offering rather than leaving as free text, because on this lakehouse the
+   * distinction is not cosmetic: a predicate on a partition column prunes files
+   * before anything is read, while one on an ordinary column does not. Presenting
+   * the partition columns is the cheapest way to steer people towards the filters
+   * that make a query survivable.
+   */
+  const loadColumns = async () => {
+    if (!table) {
+      return;
+    }
+    setLoadingColumns(true);
+    try {
+      const res = await datasource.getResource('partition-info', { table });
+      setColumns((res?.columns ?? []).map((c: string) => ({ label: c, value: c })));
+    } catch (_e) {
+      setColumns([]);
+    } finally {
+      setLoadingColumns(false);
+    }
+  };
 
   const loadValues = async () => {
     if (!table || !filter.key) {
@@ -335,12 +369,22 @@ function FilterRow({ index, filter, table, datasource, onChange, onRemove, onRun
   return (
     <InlineFieldRow>
       <InlineField label={index === 0 ? 'WHERE' : ''} labelWidth={LABEL_WIDTH}>
-        <Input
-          value={filter.key}
+        {/* allowCustomValue: partition columns are the ones worth filtering on, but
+            filtering on an ordinary column is still legal and sometimes wanted. */}
+        <Select
+          options={columns}
+          value={filter.key ? { label: filter.key, value: filter.key } : null}
           placeholder="partition column"
           width={22}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange({ ...filter, key: e.target.value })}
-          onBlur={onRunQuery}
+          allowCustomValue
+          isLoading={loadingColumns}
+          onOpenMenu={loadColumns}
+          onChange={(v) => {
+            // Clear the value: it belonged to the previous column and would silently
+            // become a filter that matches nothing.
+            onChange({ ...filter, key: v?.value ?? '', value: '' });
+            setOptions([]);
+          }}
         />
       </InlineField>
       <InlineField>

@@ -132,6 +132,51 @@ func TestPartitionValuesPropagatesAPIError(t *testing.T) {
 	}
 }
 
+func TestPartitionColumns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != pathPartitionInfo {
+			t.Errorf("path = %q, want %q", got, pathPartitionInfo)
+		}
+		// Real response shape, including the fields the endpoint refuses to compute.
+		_, _ = w.Write([]byte(`{"table_name":"testrigdata","is_partitioned":true,
+			"partition_columns":["rig_id","year","month","day","hour"],
+			"total_files":"Unknown (use partitions endpoint for details)"}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(srv.URL, "").PartitionColumns(context.Background(), "testrigdata")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Spec order matters: it is the order the partitions nest in on disk.
+	want := []string{"rig_id", "year", "month", "day", "hour"}
+	if len(got) != len(want) {
+		t.Fatalf("columns = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("columns[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// An unpartitioned table is a legitimate answer, not an error -- the builder should
+// offer no partition columns rather than showing a failure.
+func TestPartitionColumnsUnpartitionedTable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"table_name":"flat","is_partitioned":false,"partition_columns":["x"]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(srv.URL, "").PartitionColumns(context.Background(), "flat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("columns = %v, want empty when is_partitioned is false", got)
+	}
+}
+
 // An HTML error page from a proxy must not be mistaken for a result. This is a real
 // shape: the ingress returns "Bad Gateway" as text/html when it cuts a request off.
 func TestPartitionValuesRejectsNonJSONBody(t *testing.T) {
