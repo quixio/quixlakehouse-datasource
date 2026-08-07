@@ -1,6 +1,6 @@
 import { SelectableValue } from '@grafana/data';
 import { Alert, IconButton, InlineField, InlineFieldRow, Input, Select, Stack, TextArea } from '@grafana/ui';
-import React, { ChangeEvent, useCallback, useState } from 'react';
+import React, { ChangeEvent, useCallback, useEffect, useState } from 'react';
 
 import { DataSource } from '../datasource';
 import { AggregateFn, BuilderState, FilterOperator, QueryFormat } from '../types';
@@ -89,6 +89,51 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
     } finally {
       setLoadingTables(false);
     }
+  };
+
+  /**
+   * Partition columns for the selected table, fetched as soon as the table is known
+   * rather than when a dropdown is opened.
+   *
+   * Eager here, unlike tables and values, because these drive what the WHERE row can
+   * offer. Loading them lazily means clicking "+" produces an empty box the user has
+   * to know to click before it reveals anything -- filling in a blind text field is
+   * exactly the failure this replaces. They are also cheap: one call per table, and
+   * a handful of strings.
+   */
+  const table = builder.table ?? '';
+  // Stored WITH the table it belongs to, so switching tables cannot show the previous
+  // table's columns while the new request is in flight -- and so the effect never has
+  // to clear state synchronously, which triggers a cascading render.
+  const [loaded, setLoaded] = useState<{ table: string; columns: string[] }>({ table: '', columns: [] });
+  const partitionColumns = loaded.table === table ? loaded.columns : [];
+
+  useEffect(() => {
+    if (!table) {
+      return;
+    }
+    let cancelled = false;
+    datasource
+      .getResource('partition-info', { table })
+      .then((res) => {
+        if (!cancelled) {
+          setLoaded({ table, columns: res?.columns ?? [] });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoaded({ table, columns: [] });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [table, datasource]);
+
+  /** The next partition column not already filtered on, so "+" lands on something useful. */
+  const nextUnusedColumn = (): string => {
+    const used = new Set(builder.filters.map((f) => f.key));
+    return partitionColumns.find((c) => !used.has(c)) ?? '';
   };
 
   return (
@@ -193,7 +238,8 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           key={`f-${i}`}
           index={i}
           filter={f}
-          table={builder.table ?? ''}
+          table={table}
+          partitionColumns={partitionColumns}
           datasource={datasource}
           onChange={(next) => {
             const copy = [...builder.filters];
@@ -218,12 +264,21 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           interactive
           tooltip="Partition filters. Add at least one: an unpartitioned scan is the usual reason a query never returns."
         >
+          {/* Prefilled with the next unused partition column so the new row already
+              names something real. An empty row would make the user guess. */}
           <IconButton
             name="plus"
             aria-label="add filter"
-            onClick={() => set({ filters: [...builder.filters, { key: '', operator: '=', value: '' }] })}
+            onClick={() =>
+              set({ filters: [...builder.filters, { key: nextUnusedColumn(), operator: '=', value: '' }] })
+            }
           />
         </InlineField>
+        {!!table && partitionColumns.length > 0 && builder.filters.length === 0 && (
+          <InlineField label="" labelWidth={0}>
+            <span>{`partitioned by ${partitionColumns.join(', ')}`}</span>
+          </InlineField>
+        )}
       </InlineFieldRow>
 
       {/* GROUP BY */}
@@ -343,6 +398,8 @@ interface FilterRowProps {
   index: number;
   filter: { key: string; operator: FilterOperator; value: string };
   table: string;
+  /** Preloaded by the parent when the table changes, so this row opens ready. */
+  partitionColumns: string[];
   datasource: DataSource;
   onChange: (next: { key: string; operator: FilterOperator; value: string }) => void;
   onRemove: () => void;
@@ -350,39 +407,26 @@ interface FilterRowProps {
 }
 
 /**
- * One WHERE clause. The value dropdown is populated from the catalog manifest when
- * the menu opens -- lazily, because a panel can carry several filters and eagerly
- * loading all of them would fire a request per row on every render.
+ * One WHERE clause.
+ *
+ * Columns arrive preloaded from the parent. Values stay lazy: a table can have
+ * thousands of partition values (rawdata has 1007 rotorIDs), and a panel can carry
+ * several filters, so fetching them all up front would be a burst of large requests
+ * for lists the user may never open.
  */
-function FilterRow({ index, filter, table, datasource, onChange, onRemove, onRunQuery }: FilterRowProps) {
+function FilterRow({
+  index,
+  filter,
+  table,
+  partitionColumns,
+  datasource,
+  onChange,
+  onRemove,
+  onRunQuery,
+}: FilterRowProps) {
   const [options, setOptions] = useState<Array<SelectableValue<string>>>([]);
   const [loading, setLoading] = useState(false);
-  const [columns, setColumns] = useState<Array<SelectableValue<string>>>([]);
-  const [loadingColumns, setLoadingColumns] = useState(false);
-
-  /**
-   * Loads the table's partition columns.
-   *
-   * Worth offering rather than leaving as free text, because on this lakehouse the
-   * distinction is not cosmetic: a predicate on a partition column prunes files
-   * before anything is read, while one on an ordinary column does not. Presenting
-   * the partition columns is the cheapest way to steer people towards the filters
-   * that make a query survivable.
-   */
-  const loadColumns = async () => {
-    if (!table) {
-      return;
-    }
-    setLoadingColumns(true);
-    try {
-      const res = await datasource.getResource('partition-info', { table });
-      setColumns((res?.columns ?? []).map((c: string) => ({ label: c, value: c })));
-    } catch (_e) {
-      setColumns([]);
-    } finally {
-      setLoadingColumns(false);
-    }
-  };
+  const columns: Array<SelectableValue<string>> = partitionColumns.map((c) => ({ label: c, value: c }));
 
   const loadValues = async () => {
     if (!table || !filter.key) {
@@ -413,8 +457,6 @@ function FilterRow({ index, filter, table, datasource, onChange, onRemove, onRun
           placeholder="partition column"
           width={22}
           allowCustomValue
-          isLoading={loadingColumns}
-          onOpenMenu={loadColumns}
           onChange={(v) => {
             // Clear the value: it belonged to the previous column and would silently
             // become a filter that matches nothing.
