@@ -61,6 +61,13 @@ jobs:
       - name: Build frontend
         run: |
           npm ci --no-audit --no-fund
+          # The tag is the single source of truth for the version. webpack substitutes
+          # %VERSION% in plugin.json from package.json (.config/webpack/webpack.config.ts:27),
+          # so without this the zip is named from the tag while plugin.json carries
+          # whatever package.json happened to say. Grafana reads plugin.json, and the
+          # plugin validator rejects the mismatch at catalog submission -- v0.0.1 shipped
+          # with exactly that defect before this step existed.
+          npm version "${{ steps.v.outputs.version }}" --no-git-tag-version --allow-same-version
           npm run build
 
       # Default mage target is build.BuildAll, which cross-compiles every platform.
