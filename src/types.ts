@@ -109,11 +109,21 @@ ORDER BY 1
 LIMIT 1000`;
 
 export const DEFAULT_QUERY: Partial<QuixLakeQuery> = {
-  rawSql: DEFAULT_SQL,
+  // Open in the builder. rawSql stays EMPTY here on purpose: the builder generates
+  // it, and seeding a template would both fight the builder and make the editor
+  // open in Code mode, since a non-empty rawSql is what selects that view.
+  //
+  // The "safe default" still holds -- it just lives in DEFAULT_BUILDER now, which
+  // starts with time bucketing on at $__interval and LIMIT 1000, so the first query
+  // anyone generates is bounded and scales with zoom. DEFAULT_SQL remains the
+  // placeholder shown in Code mode.
+  editorMode: 'builder',
+  builder: DEFAULT_BUILDER,
+  rawSql: '',
   format: 'time_series',
-  // Matches the `AS time` alias above. Set explicitly rather than relying on the
-  // backend's name heuristic: leaving it empty yields a plain number field and a
-  // panel that will not plot, with nothing on screen explaining why.
+  // Matches the `AS time` alias the builder emits. Set explicitly rather than
+  // relying on the backend's name heuristic: leaving it empty yields a plain number
+  // field and a panel that will not plot, with nothing on screen explaining why.
   timeColumn: 'time',
   timeFormat: 'epoch_ms',
 };

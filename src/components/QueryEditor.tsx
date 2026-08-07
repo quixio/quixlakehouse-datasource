@@ -7,6 +7,7 @@ import { DataSource } from '../datasource';
 import {
   BuilderState,
   DEFAULT_BUILDER,
+  DEFAULT_SQL,
   EditorMode,
   QueryFormat,
   QuixLakeDataSourceOptions,
@@ -124,9 +125,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             id="query-editor-raw-sql"
             rows={8}
             value={query.rawSql ?? ''}
-            placeholder={
-              'SELECT $__timeGroup(ts_ms, $__interval) AS time, avg(speed) AS speed\nFROM car_telemetry\nWHERE $__timeFilter(ts_ms) AND year = \'2026\'\nGROUP BY 1 ORDER BY 1 LIMIT 1000'
-            }
+            placeholder={DEFAULT_SQL}
             onChange={onRawSqlChange}
             onBlur={onRunQuery}
           />
