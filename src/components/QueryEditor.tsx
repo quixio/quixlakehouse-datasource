@@ -114,6 +114,29 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [detecting, setDetecting] = useState(false);
 
   /**
+   * Sets the origin to the current clock time, for counting backwards from now
+   * (elapsed since now, i.e. negative) or anchoring a live recording.
+   *
+   * Converted into the time column's own units, because that is what the origin is
+   * subtracted from. Getting this wrong is not subtle -- an epoch-seconds column with
+   * a millisecond origin lands roughly 55,000 years out.
+   */
+  const setOriginToNow = () => {
+    const nowMs = Date.now();
+    const fmt = query.timeFormat ?? 'epoch_ms';
+    const origin =
+      fmt === 'epoch_s'
+        ? Math.floor(nowMs / 1000)
+        : fmt === 'epoch_us'
+          ? nowMs * 1000
+          : fmt === 'epoch_ns'
+            ? nowMs * 1_000_000
+            : nowMs;
+    onChange({ ...query, timeOrigin: origin });
+    onRunQuery();
+  };
+
+  /**
    * Fills the origin from min() over the table.
    *
    * Only possible in builder mode: it needs the table and the time expression, and
@@ -270,6 +293,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             />
             <Button variant="secondary" size="sm" disabled={detecting} onClick={detectOrigin}>
               {detecting ? 'Detecting…' : 'Detect'}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={setOriginToNow} title="Set zero to the current clock time">
+              Now
             </Button>
           </Stack>
         </InlineField>
