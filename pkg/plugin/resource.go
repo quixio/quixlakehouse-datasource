@@ -36,6 +36,8 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		return d.handleTables(ctx, sender)
 	case path == pathSchema && req.Method == http.MethodGet:
 		return d.handleSchema(ctx, req, sender)
+	case path == pathTimeOrigin && req.Method == http.MethodGet:
+		return d.handleTimeOrigin(ctx, req, sender)
 	default:
 		return sendJSON(sender, http.StatusNotFound, map[string]string{
 			"error": "no such resource: " + req.Method + " " + path,
@@ -131,6 +133,47 @@ func (d *Datasource) handleTables(ctx context.Context, sender backend.CallResour
 		return sendJSON(sender, status, map[string]string{"error": msg})
 	}
 	return sendJSON(sender, http.StatusOK, map[string]any{"tables": tables})
+}
+
+// handleTimeOrigin resolves the instant that becomes zero in relative mode.
+//
+// Exposed as a resource, not computed during QueryData, so the value can be stored in
+// the panel. Recomputing per request would move the origin whenever the filter
+// changed, and the axis would never advance past zero.
+func (d *Datasource) handleTimeOrigin(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	params, err := url.ParseQuery(req.URL)
+	if err != nil {
+		return sendJSON(sender, http.StatusBadRequest, map[string]string{
+			"error": "could not parse query parameters: " + err.Error(),
+		})
+	}
+	params = stripPathFromQuery(params)
+
+	table := params.Get("table")
+	timeExpr := params.Get("expr")
+	if table == "" || timeExpr == "" {
+		return sendJSON(sender, http.StatusBadRequest, map[string]string{
+			"error": "both 'table' and 'expr' are required",
+		})
+	}
+
+	filters := map[string]string{}
+	for k := range params {
+		if k == "table" || k == "expr" {
+			continue
+		}
+		if v := params.Get(k); v != "" {
+			filters[k] = v
+		}
+	}
+
+	origin, err := d.client.MinTime(ctx, table, timeExpr, filters)
+	if err != nil {
+		msg, _ := classifyError(err, d.baseURL)
+		log.DefaultLogger.Warn("time-origin lookup failed", "table", table, "expr", timeExpr, "err", err)
+		return sendJSON(sender, http.StatusBadGateway, map[string]string{"error": msg})
+	}
+	return sendJSON(sender, http.StatusOK, map[string]any{"origin": origin})
 }
 
 // handleSchema lists a table's columns with their types, for the SELECT and

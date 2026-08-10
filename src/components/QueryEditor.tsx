@@ -1,6 +1,6 @@
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
-import { InlineField, Input, RadioButtonGroup, Select, Stack, TextArea } from '@grafana/ui';
-import React, { ChangeEvent } from 'react';
+import { Button, InlineField, Input, RadioButtonGroup, Select, Stack, TextArea } from '@grafana/ui';
+import React, { ChangeEvent, useState } from 'react';
 
 import { buildSQL } from '../builder/sql';
 import { DataSource } from '../datasource';
@@ -13,6 +13,7 @@ import {
   QuixLakeDataSourceOptions,
   QuixLakeQuery,
   TimeFormat,
+  TimeMode,
 } from '../types';
 import { QueryBuilder } from './QueryBuilder';
 
@@ -30,6 +31,11 @@ const EDITOR_MODES: Array<SelectableValue<EditorMode>> = [
 const FORMAT_OPTIONS: Array<SelectableValue<QueryFormat>> = [
   { label: 'Time series', value: 'time_series' },
   { label: 'Table', value: 'table' },
+];
+
+const TIME_MODE_OPTIONS: Array<SelectableValue<TimeMode>> = [
+  { label: 'Absolute', value: 'absolute' },
+  { label: 'Relative to start', value: 'relative' },
 ];
 
 const TIME_FORMAT_OPTIONS: Array<SelectableValue<TimeFormat>> = [
@@ -98,6 +104,44 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const onTimeFormatChange = (selected: SelectableValue<TimeFormat>) => {
     onChange({ ...query, timeFormat: selected.value ?? 'epoch_ms' });
     onRunQuery();
+  };
+
+  const onTimeModeChange = (selected: SelectableValue<TimeMode>) => {
+    onChange({ ...query, timeMode: selected.value ?? 'absolute' });
+    onRunQuery();
+  };
+
+  const [detecting, setDetecting] = useState(false);
+
+  /**
+   * Fills the origin from min() over the table.
+   *
+   * Only possible in builder mode: it needs the table and the time expression, and
+   * raw SQL would have to be parsed to recover them. In Code mode the field is typed
+   * in by hand.
+   */
+  const detectOrigin = async () => {
+    const table = (builder.table ?? '').trim();
+    const timeExpr = (builder.timeColumn ?? '').trim();
+    if (!table || !timeExpr) {
+      return;
+    }
+    setDetecting(true);
+    try {
+      const params: Record<string, string> = { table, expr: timeExpr };
+      for (const f of builder.filters) {
+        if (f.key && f.value) {
+          params[f.key] = f.value;
+        }
+      }
+      const res = await datasource.getResource('time-origin', params);
+      if (typeof res?.origin === 'number') {
+        onChange({ ...query, timeOrigin: res.origin });
+        onRunQuery();
+      }
+    } finally {
+      setDetecting(false);
+    }
   };
 
   return (
@@ -179,6 +223,47 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           width={28}
         />
       </InlineField>
+
+      <InlineField
+        label="Time mode"
+        labelWidth={LABEL_WIDTH}
+        interactive
+        tooltip="Absolute plots wall-clock time. Relative rebases so the run starts at zero, for recordings where the absolute date carries no meaning. Relative works by moving the data to the epoch -- Grafana has no duration axis -- so set the dashboard timezone to UTC and its range in elapsed terms, e.g. 1970-01-01 00:00:00 to 00:02:00. Zoom still works. Do not use it for alert rules: the data claims to be from 1970."
+      >
+        <Select
+          inputId="query-editor-time-mode"
+          options={TIME_MODE_OPTIONS}
+          value={query.timeMode ?? 'absolute'}
+          onChange={onTimeModeChange}
+          width={28}
+        />
+      </InlineField>
+
+      {(query.timeMode ?? 'absolute') === 'relative' && (
+        <InlineField
+          label="Zero at"
+          labelWidth={LABEL_WIDTH}
+          interactive
+          tooltip="The instant that becomes zero, in the time column's own units. Detect fills it from min() over the table, ignoring the dashboard range -- an origin that moved with the filter would make the window always restart at zero and zoom look broken."
+        >
+          <Stack direction="row" gap={0.5} alignItems="center">
+            <Input
+              id="query-editor-time-origin"
+              type="number"
+              value={query.timeOrigin ?? ''}
+              placeholder="e.g. 1785925833288"
+              width={28}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                onChange({ ...query, timeOrigin: Number(e.target.value) || undefined })
+              }
+              onBlur={onRunQuery}
+            />
+            <Button variant="secondary" size="sm" disabled={detecting} onClick={detectOrigin}>
+              {detecting ? 'Detecting…' : 'Detect'}
+            </Button>
+          </Stack>
+        </InlineField>
+      )}
     </Stack>
   );
 }

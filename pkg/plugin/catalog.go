@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +31,7 @@ const (
 	pathPartitions      = "/partitions"
 	pathTables          = "/tables"
 	pathSchema          = "/schema"
+	pathTimeOrigin      = "/time-origin"
 )
 
 type tablesResponse struct {
@@ -54,6 +56,57 @@ type schemaResponse struct {
 var internalColumns = map[string]bool{
 	"__index_level_0__": true,
 	"__key":             true,
+}
+
+// MinTime returns the smallest value of a time expression in a table, which is the
+// origin for relative mode.
+//
+// Runs a real query rather than reading metadata, because the value is data, not a
+// partition. It is cheap: min() over one column is an aggregate DuckDB answers from
+// the column chunks, and the partition filters keep the file count down.
+//
+// Deliberately NOT filtered by the dashboard time range. An origin recomputed from
+// whatever the current zoom left would move on every zoom, so the visible window
+// would always restart at zero and dragging would appear to do nothing.
+func (c *RESTClient) MinTime(ctx context.Context, table, timeExpr string, filters map[string]string) (int64, error) {
+	if strings.TrimSpace(table) == "" || strings.TrimSpace(timeExpr) == "" {
+		return 0, fmt.Errorf("table and expr are required")
+	}
+
+	sql := "SELECT min(" + timeExpr + ") AS origin FROM " + table
+	keys := make([]string, 0, len(filters))
+	for k := range filters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for i, k := range keys {
+		v := filters[k]
+		if v == "" {
+			continue
+		}
+		clause := " AND "
+		if i == 0 {
+			clause = " WHERE "
+		}
+		sql += clause + k + " = '" + strings.ReplaceAll(v, "'", "''") + "'"
+	}
+
+	resp, err := c.Query(ctx, sql, false /* CSV: one scalar, and CSV can report a mid-stream error */)
+	if err != nil {
+		return 0, err
+	}
+
+	// header line, then the value
+	lines := strings.Split(strings.TrimSpace(string(resp.Body)), "\n")
+	if len(lines) < 2 {
+		return 0, fmt.Errorf("no rows returned for the origin query")
+	}
+	raw := strings.TrimSpace(lines[1])
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("could not parse the origin %q: %w", raw, err)
+	}
+	return int64(f), nil
 }
 
 // Schema lists a table's columns, for the builder's SELECT and TIME COLUMN dropdowns.

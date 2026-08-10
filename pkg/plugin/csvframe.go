@@ -76,7 +76,7 @@ func csvBodyToFrame(body []byte, opts frameOptions) (*data.Frame, error) {
 
 	fields := make([]*data.Field, len(header))
 	for i, name := range header {
-		fields[i] = csvColumnToField(name, columns[i], i == timeIdx, opts.TimeFormat)
+		fields[i] = csvColumnToField(name, columns[i], i == timeIdx, opts.TimeFormat, opts.TimeOrigin)
 	}
 
 	// A wide time-series frame must lead with its time field.
@@ -120,9 +120,9 @@ func pickCSVTimeColumn(header []string, opts frameOptions) int {
 //
 // Values are always nullable pointer slices: an empty CSV cell is a NULL, and
 // coercing it to 0 would invent data.
-func csvColumnToField(name string, values []string, asTime bool, format TimeFormat) *data.Field {
+func csvColumnToField(name string, values []string, asTime bool, format TimeFormat, origin int64) *data.Field {
 	if asTime {
-		return data.NewField(name, nil, parseCSVTimeColumn(values, format))
+		return data.NewField(name, nil, parseCSVTimeColumn(values, format, origin))
 	}
 
 	if ints, ok := parseCSVInts(values); ok {
@@ -155,7 +155,7 @@ func isCSVNull(v string) bool {
 // parseCSVTimeColumn converts a time column, accepting either an epoch integer or
 // an ISO-8601 timestamp regardless of the declared format, because a CSV body gives
 // no type information to rely on.
-func parseCSVTimeColumn(values []string, format TimeFormat) []*time.Time {
+func parseCSVTimeColumn(values []string, format TimeFormat, origin int64) []*time.Time {
 	out := make([]*time.Time, len(values))
 	for i, raw := range values {
 		v := strings.TrimSpace(raw)
@@ -163,12 +163,12 @@ func parseCSVTimeColumn(values []string, format TimeFormat) []*time.Time {
 			continue
 		}
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			t := format.ToTime(n)
+			t := format.ToTime(n - origin)
 			out[i] = &t
 			continue
 		}
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			t := format.ToTime(int64(f))
+			t := format.ToTime(int64(f) - origin)
 			out[i] = &t
 			continue
 		}

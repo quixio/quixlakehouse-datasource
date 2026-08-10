@@ -82,6 +82,42 @@ type queryModel struct {
 	// TimeFormat says how that column is stored; defaults to epoch milliseconds,
 	// which is how the QuixLake sink writes time-series data.
 	TimeFormat TimeFormat `json:"timeFormat"`
+	// TimeMode selects an absolute or a zero-based ("relative") time axis.
+	TimeMode TimeMode `json:"timeMode"`
+	// TimeOrigin is the instant that becomes zero in relative mode, in the time
+	// column's own units. Supplied by the caller and stored in the panel, NOT derived
+	// per request: an origin recomputed from the filtered rows would move every time
+	// the user zoomed, so the window would always restart at zero and zoom would look
+	// broken.
+	TimeOrigin int64 `json:"timeOrigin"`
+}
+
+// TimeMode selects how the time axis is anchored.
+type TimeMode string
+
+const (
+	// TimeModeAbsolute plots real wall-clock instants. The default.
+	TimeModeAbsolute TimeMode = "absolute"
+	// TimeModeRelative rebases the time field so the run starts at zero.
+	//
+	// Zero means the Unix epoch, because a Grafana time field is defined as an offset
+	// from 1970-01-01 and there is no duration field type -- so an elapsed axis can
+	// only be expressed by moving the data, not by changing the axis. The dashboard
+	// range is then read as elapsed too: $__timeFilter shifts by the origin, so
+	// selecting 00:00:20-00:00:40 fetches the rows 20-40 seconds into the run.
+	//
+	// Cost, and it is real: the frames claim to be from 1970. Alert rules on them are
+	// meaningless and now-relative ranges never match. Fine for a fixed-window
+	// analysis dashboard; wrong for anything alerting.
+	TimeModeRelative TimeMode = "relative"
+)
+
+// Normalize defaults an unset or unrecognised mode to absolute.
+func (m TimeMode) Normalize() TimeMode {
+	if TimeMode(strings.TrimSpace(string(m))) == TimeModeRelative {
+		return TimeModeRelative
+	}
+	return TimeModeAbsolute
 }
 
 // QueryData runs every target on the panel. Grafana calls this for dashboards,
@@ -119,6 +155,14 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 	}
 	timeFormat := qm.TimeFormat.Normalize()
 
+	// In relative mode the stored column is untouched; only the range bounds and the
+	// returned values are shifted, so the SQL still reads the real data while the axis
+	// reads as elapsed.
+	origin := int64(0)
+	if qm.TimeMode.Normalize() == TimeModeRelative {
+		origin = qm.TimeOrigin
+	}
+
 	// Macro expansion happens here, in the backend, so it works identically for a
 	// dashboard panel and an alert rule.
 	sqlQuery := &sqlutil.Query{
@@ -128,7 +172,7 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 		Interval:      query.Interval,
 		MaxDataPoints: query.MaxDataPoints,
 	}
-	expanded, err := interpolate(rawSQL, sqlQuery, timeFormat)
+	expanded, err := interpolate(rawSQL, sqlQuery, timeFormat, origin)
 	if err != nil {
 		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 	}
@@ -171,6 +215,7 @@ func (d *Datasource) query(ctx context.Context, query backend.DataQuery) backend
 		Format:        format,
 		TimeColumn:    qm.TimeColumn,
 		TimeFormat:    timeFormat,
+		TimeOrigin:    origin,
 		ExecutedQuery: expanded,
 	}
 

@@ -21,6 +21,22 @@ export interface QuixLakeQuery extends DataQuery {
   format?: QueryFormat;
   timeColumn?: string;
   timeFormat?: TimeFormat;
+  /**
+   * Absolute wall-clock time, or an axis rebased so the run starts at zero.
+   *
+   * Relative works by moving the data to the epoch, because a Grafana time field is
+   * an offset from 1970 and there is no duration field type. The dashboard range is
+   * then read as elapsed as well, so zoom keeps working.
+   */
+  timeMode?: TimeMode;
+  /**
+   * The instant that becomes zero, in the time column's units.
+   *
+   * Stored in the panel rather than derived per request on purpose: an origin
+   * recomputed from the filtered rows moves on every zoom, so the window would always
+   * restart at zero and dragging would appear to do nothing.
+   */
+  timeOrigin?: number;
   /** Which editor is showing. The backend never reads this. */
   editorMode?: EditorMode;
   /** Builder state. Kept alongside rawSql, not instead of it -- see below. */
@@ -28,6 +44,9 @@ export interface QuixLakeQuery extends DataQuery {
 }
 
 export type EditorMode = 'builder' | 'code';
+
+/** Must stay in sync with TimeMode in pkg/plugin/datasource.go. */
+export type TimeMode = 'absolute' | 'relative';
 
 /** Aggregates offered in the SELECT row. 'none' selects the raw column. */
 export type AggregateFn = 'none' | 'avg' | 'min' | 'max' | 'sum' | 'count';
