@@ -32,10 +32,10 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
   const selects: string[] = [];
   if (bucketing) {
     const interval = (state.interval ?? '$__interval').trim() || '$__interval';
-    selects.push(`$__timeGroup(${ident(timeColumn)}, ${interval}) AS time`);
+    selects.push(`$__timeGroup(${expr(timeColumn)}, ${interval}) AS time`);
   } else if (timeColumn !== '' && format === 'time_series') {
     // A time series needs a time field; without bucketing, pass the column through.
-    selects.push(`${ident(timeColumn)} AS time`);
+    selects.push(`${expr(timeColumn)} AS time`);
   }
 
   let valueColumns = 0;
@@ -46,11 +46,11 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
     }
     valueColumns++;
     if (s.aggregate === 'none') {
-      selects.push(ident(col));
+      selects.push(expr(col));
     } else {
       // Alias to the bare column name so the series legend reads "speed", not
       // "avg(speed)", matching what the InfluxQL editor produces.
-      selects.push(`${s.aggregate}(${ident(col)}) AS ${ident(col)}`);
+      selects.push(`${s.aggregate}(${expr(col)}) AS ${ident(aliasFor(col))}`);
     }
   }
 
@@ -63,7 +63,7 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
 
   const wheres: string[] = [];
   if (timeColumn !== '') {
-    wheres.push(`$__timeFilter(${ident(timeColumn)})`);
+    wheres.push(`$__timeFilter(${expr(timeColumn)})`);
   }
   for (const f of state.filters) {
     const key = (f.key ?? '').trim();
@@ -96,7 +96,7 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
     for (const s of state.select) {
       const col = (s.column ?? '').trim();
       if (col !== '' && s.aggregate === 'none') {
-        groups.push(ident(col));
+        groups.push(expr(col));
       }
     }
   }
@@ -123,6 +123,22 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
   return lines.join('\n');
 }
 
+/**
+ * Alias for an aggregated select item.
+ *
+ * A plain column aliases to itself, so the legend reads "speed" rather than
+ * "avg(speed)". An expression cannot: `avg(value * 100) AS "value * 100"` is legal but
+ * makes a wretched series name, so the first identifier in it is used instead.
+ */
+function aliasFor(col: string): string {
+  const v = col.trim();
+  if (/^[a-z_][a-z0-9_]*$/i.test(v)) {
+    return v;
+  }
+  const firstIdent = v.match(/[a-z_][a-z0-9_]*/i);
+  return firstIdent ? firstIdent[0] : 'value';
+}
+
 function hasAggregate(state: BuilderState): boolean {
   return state.select.some((s) => s.aggregate !== 'none' && (s.column ?? '').trim() !== '');
 }
@@ -147,6 +163,32 @@ export function ident(name: string): string {
     return name;
   }
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Anything that looks like a SQL expression rather than a column name is passed
+ * through untouched; a plain name is quoted as an identifier.
+ *
+ * This exists because a timestamp is not always one column. In `can_signals`, `ts_ms`
+ * is the segment start and is constant for every row in that segment, while `t_rel`
+ * is the offset within it -- the actual instant is
+ * `ts_ms + CAST(t_rel * 1000 AS BIGINT)`. Without this, ident() would see the spaces
+ * and parentheses, decide the whole thing was an awkward column name, and emit
+ * `"ts_ms + CAST(t_rel * 1000 AS BIGINT)"` -- a quoted identifier that does not exist.
+ *
+ * No new injection surface: the Code editor already accepts arbitrary SQL from the
+ * same user.
+ */
+export function expr(value: string): string {
+  const v = value.trim();
+  if (/^[a-z_][a-z0-9_]*$/i.test(v)) {
+    return ident(v);
+  }
+  // Contains operators, calls, or quoting -- the user means it as SQL.
+  if (/[^a-z0-9_]/i.test(v)) {
+    return v;
+  }
+  return ident(v);
 }
 
 /** Single-quoted string literal with quote escaping. */

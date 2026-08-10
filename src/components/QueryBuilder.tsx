@@ -238,7 +238,7 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           label="TIME COLUMN"
           labelWidth={LABEL_WIDTH}
           interactive
-          tooltip="Column holding the timestamp. Drives $__timeFilter and the time bucket. Usually epoch milliseconds in this lakehouse."
+          tooltip="Column holding the timestamp, usually epoch milliseconds. Drives $__timeFilter and the time bucket. An expression is allowed: where the instant is split across two columns, e.g. a per-segment start plus an offset, use ts_ms + CAST(t_rel * 1000 AS BIGINT). Filtering the same expression is what lets zoom cut inside a segment."
         >
           <Select
             options={timeColumnOptions}

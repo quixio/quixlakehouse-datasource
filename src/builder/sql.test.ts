@@ -90,6 +90,32 @@ describe('buildSQL', () => {
   });
 });
 
+// can_signals stores the instant across two columns: ts_ms is the segment start and
+// is constant within a segment, t_rel the offset into it. Filtering bare ts_ms can
+// only include or exclude whole 60-second segments, so zoom cannot cut inside one.
+describe('composite time expressions', () => {
+  const timeExpr = 'ts_ms + CAST(t_rel * 1000 AS BIGINT)';
+
+  it('does not quote an expression as an identifier', () => {
+    const sql = buildSQL(base({ timeColumn: timeExpr }));
+    expect(sql).toContain(`$__timeGroup(${timeExpr}, $__interval) AS time`);
+    expect(sql).not.toContain(`"${timeExpr}"`);
+  });
+
+  it('filters on the same expression, so zoom can cut inside a segment', () => {
+    expect(buildSQL(base({ timeColumn: timeExpr }))).toContain(`$__timeFilter(${timeExpr})`);
+  });
+
+  it('accepts an expression as a value field and gives it a usable alias', () => {
+    const sql = buildSQL(base({ select: [{ column: 'value * 100', aggregate: 'avg' }] }));
+    expect(sql).toContain('avg(value * 100) AS value');
+  });
+
+  it('still quotes an awkward plain column name', () => {
+    expect(buildSQL(base({ timeColumn: 'rotorID', groupByTime: false }))).toContain('"rotorID" AS time');
+  });
+});
+
 describe('identifier quoting', () => {
   // DuckDB folds unquoted identifiers to lower case, and these columns really exist
   // in the lakehouse: rawdata has rotorID and __index_level_0__.
