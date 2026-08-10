@@ -28,7 +28,10 @@ import (
 type recordStream interface {
 	Schema() *arrow.Schema
 	Next() bool
-	Record() arrow.Record
+	// arrow.RecordBatch, not arrow.Record: the latter is deprecated in arrow-go v18
+	// to remove the ambiguity of "record" meaning a single row elsewhere. They are
+	// the same type, so *ipc.Reader still satisfies this.
+	Record() arrow.RecordBatch
 	Err() error
 }
 
@@ -75,26 +78,26 @@ func newColBuilder[T any](nullable bool, capacity int, valueAt func(arrow.Array,
 // asTime forces a numeric column to be materialised as a Grafana time field, which
 // is how an INT64 epoch-millis column becomes something a time-series panel can
 // plot. Arrow-native timestamp/date types are always converted to time.Time.
-func builderFor(field arrow.Field, asTime bool, format TimeFormat, capacity int) (*colBuilder, error) {
+func builderFor(field arrow.Field, asTime bool, format TimeFormat, origin int64, capacity int) (*colBuilder, error) {
 	nullable := field.Nullable
 
 	if asTime {
 		switch field.Type.ID() {
 		case arrow.INT64:
 			return newColBuilder(nullable, capacity, func(a arrow.Array, i int) time.Time {
-				return format.ToTime(a.(*array.Int64).Value(i))
+				return format.ToTime(a.(*array.Int64).Value(i) - origin)
 			}), nil
 		case arrow.INT32:
 			return newColBuilder(nullable, capacity, func(a arrow.Array, i int) time.Time {
-				return format.ToTime(int64(a.(*array.Int32).Value(i)))
+				return format.ToTime(int64(a.(*array.Int32).Value(i)) - origin)
 			}), nil
 		case arrow.UINT64:
 			return newColBuilder(nullable, capacity, func(a arrow.Array, i int) time.Time {
-				return format.ToTime(int64(a.(*array.Uint64).Value(i)))
+				return format.ToTime(int64(a.(*array.Uint64).Value(i)) - origin)
 			}), nil
 		case arrow.FLOAT64:
 			return newColBuilder(nullable, capacity, func(a arrow.Array, i int) time.Time {
-				return format.ToTime(int64(a.(*array.Float64).Value(i)))
+				return format.ToTime(int64(a.(*array.Float64).Value(i)) - origin)
 			}), nil
 		}
 		// Anything else falls through to its natural mapping below; an Arrow
@@ -187,6 +190,9 @@ type frameOptions struct {
 	TimeColumn string
 	// TimeFormat says how that column is physically stored.
 	TimeFormat TimeFormat
+	// TimeOrigin is subtracted from the stored value in relative mode, so the run
+	// starts at the epoch and the axis reads as elapsed. Zero in absolute mode.
+	TimeOrigin int64
 	// ExecutedQuery is the fully macro-expanded SQL, surfaced in the panel's
 	// "Query inspector -> Query" tab. Parity with the legacy path's
 	// executedQueryString (quix-ts-datalake-api/grafana_api.py:374-376).
@@ -264,7 +270,7 @@ func emptyFrame(opts frameOptions) *data.Frame {
 func recordsToFrame(reader recordStream, opts frameOptions) (*data.Frame, error) {
 	schema := reader.Schema()
 	if schema == nil {
-		return nil, fmt.Errorf("Arrow stream returned no schema")
+		return nil, fmt.Errorf("no schema in the Arrow stream")
 	}
 
 	fields := schema.Fields()
@@ -273,7 +279,7 @@ func recordsToFrame(reader recordStream, opts frameOptions) (*data.Frame, error)
 	const initialCapacity = 1024
 	builders := make([]*colBuilder, len(fields))
 	for i, f := range fields {
-		b, err := builderFor(f, i == timeIdx, opts.TimeFormat, initialCapacity)
+		b, err := builderFor(f, i == timeIdx, opts.TimeFormat, opts.TimeOrigin, initialCapacity)
 		if err != nil {
 			return nil, fmt.Errorf("column %q: %w", f.Name, err)
 		}

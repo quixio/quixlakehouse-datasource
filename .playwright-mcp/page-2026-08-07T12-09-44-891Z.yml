@@ -1,0 +1,93 @@
+- generic [ref=f6e8]:
+  - link "Skip to main content" [ref=f6e9] [cursor=pointer]:
+    - /url: "#pageContent"
+  - banner [ref=f6e11]:
+    - generic [ref=f6e12]:
+      - generic [ref=f6e13]:
+        - button "Main menu" [ref=f6e14] [cursor=pointer]
+        - link [ref=f6e19] [cursor=pointer]:
+          - /url: /
+          - img "Grafana" [ref=f6e20]
+        - navigation "Breadcrumbs" [ref=f6e21]:
+          - list [ref=f6e22]:
+            - listitem [ref=f6e23]:
+              - link "Dashboards" [ref=f6e24] [cursor=pointer]:
+                - /url: /dashboards
+            - listitem [ref=f6e28]:
+              - generic "New dashboard" [ref=f6e29]
+      - generic [ref=f6e30]:
+        - generic [ref=f6e32]:
+          - button "Search..." [ref=f6e36] [cursor=pointer]
+          - generic [ref=f6e37]: ctrl+k
+        - button "New" [ref=f6e39] [cursor=pointer]
+        - button "Help" [ref=f6e45] [cursor=pointer]
+        - button "Profile" [ref=f6e49] [cursor=pointer]:
+          - img "User avatar" [ref=f6e50]
+  - main [ref=f6e53]:
+    - log [ref=f6e54]
+    - generic [ref=f6e57]:
+      - generic [ref=f6e59]:
+        - generic [ref=f6e60]:
+          - generic [ref=f6e61]:
+            - generic [ref=f6e62]:
+              - button "Move 3h backward" [ref=f6e63] [cursor=pointer]
+              - 'button "Time range selected: Last 6 hours" [ref=f6e66] [cursor=pointer]':
+                - generic [ref=f6e69]: Last 6 hours
+              - button "Move time range forwards" [ref=f6e74] [cursor=pointer]
+              - button "Zoom out time range" [ref=f6e77] [cursor=pointer]
+            - generic [ref=f6e80]:
+              - button "Refresh" [ref=f6e81] [cursor=pointer]
+              - button "Auto refresh turned off. Choose refresh time interval" [ref=f6e87] [cursor=pointer]
+          - button "Save" [ref=f6e91] [cursor=pointer]
+        - button "Add variable" [ref=f6e95] [cursor=pointer]
+      - generic [ref=f6e98]:
+        - generic [ref=f6e100]:
+          - region [ref=f6e109]:
+            - heading "New panel" [level=2] [ref=f6e112]
+            - generic [ref=f6e114]:
+              - generic: No visualization configured
+              - generic [ref=f6e115]:
+                - button "Configure visualization" [ref=f6e117] [cursor=pointer]
+                - button "Use library panel" [ref=f6e121] [cursor=pointer]
+          - generic [ref=f6e128]:
+            - button "Add panel" [ref=f6e129] [cursor=pointer]
+            - button "Group panels" [ref=f6e133] [cursor=pointer]
+        - generic [ref=f6e137]:
+          - generic [ref=f6e140]:
+            - generic [ref=f6e141]:
+              - generic [ref=f6e142]:
+                - button "Go back" [ref=f6e143] [cursor=pointer]
+                - generic [ref=f6e146]: Panel
+                - button "Undock" [ref=f6e147] [cursor=pointer]
+                - button "Close" [ref=f6e150] [cursor=pointer]
+              - generic [ref=f6e153]:
+                - button "Duplicate" [ref=f6e154] [cursor=pointer]
+                - button "Copy" [ref=f6e158] [cursor=pointer]
+                - button "Delete" [ref=f6e162] [cursor=pointer]
+            - generic [ref=f6e169]:
+              - button "Edit visualization" [ref=f6e171] [cursor=pointer]
+              - generic [ref=f6e175]:
+                - generic [ref=f6e176]:
+                  - generic [ref=f6e177]: Title
+                  - textbox "Title" [active] [ref=f6e185]: New panel
+                - generic [ref=f6e186]:
+                  - generic [ref=f6e187]: Description
+                  - textbox "Description" [ref=f6e193]
+                - generic [ref=f6e194]:
+                  - generic [ref=f6e195]: Transparent background
+                  - generic [ref=f6e201]:
+                    - switch "Transparent background" [ref=f6e202]
+                    - generic [ref=f6e203] [cursor=pointer]
+              - generic [ref=f6e205] [cursor=pointer]:
+                - heading "Repeat options" [level=3] [ref=f6e206]
+                - button "Expand Repeat options category" [ref=f6e207]
+              - heading "Show / hide rules" [level=3] [ref=f6e212]
+          - generic [ref=f6e219]:
+            - generic [ref=f6e220]:
+              - button "Add" [ref=f6e221] [cursor=pointer]
+              - button "Options" [ref=f6e225] [cursor=pointer]
+              - button "Give feedback on the new dashboard editing experience" [ref=f6e229] [cursor=pointer]
+              - button "Code" [ref=f6e233] [cursor=pointer]
+            - generic [ref=f6e237]:
+              - button "Outline" [ref=f6e238] [cursor=pointer]
+              - button "Hide" [ref=f6e243] [cursor=pointer]

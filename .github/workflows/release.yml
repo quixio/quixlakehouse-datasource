@@ -1,0 +1,137 @@
+# Packages the plugin as a Grafana-installable zip and attaches it to a GitHub Release.
+#
+# This is what makes the plugin installable by anyone who is NOT deploying our Grafana
+# image -- i.e. `GF_INSTALL_PLUGINS=<url>;quix-quixlakehouse-datasource`, or unzipping
+# into /var/lib/grafana/plugins. It is also the artefact a Grafana catalog submission
+# points at.
+#
+# THE LAYOUT IS THE WHOLE JOB. Grafana discovers a plugin by directory name, which must
+# equal the plugin id. Zipping `dist/` produces an archive containing a folder called
+# "dist", which Grafana silently ignores -- the plugin simply never appears, with no
+# error to explain why. So we rename to the plugin id before zipping.
+#
+# Alternative worth knowing: grafana/plugin-actions/build-plugin does this and signing in
+# one step. Prefer it once we actually want a signature; until then this is fewer moving
+# parts and the layout is visible in the diff.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Lets us produce and inspect a zip without cutting a real tag.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_ID: quix-quixlakehouse-datasource
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: v
+        run: |
+          # A tag is authoritative; a manual run falls back to package.json so the
+          # artefact is still named something meaningful.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")-dev.${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Packaging version $VERSION"
+
+      - name: Build frontend
+        run: |
+          npm ci --no-audit --no-fund
+          # The tag is the single source of truth for the version. webpack substitutes
+          # %VERSION% in plugin.json from package.json (.config/webpack/webpack.config.ts:27),
+          # so without this the zip is named from the tag while plugin.json carries
+          # whatever package.json happened to say. Grafana reads plugin.json, and the
+          # plugin validator rejects the mismatch at catalog submission -- v0.0.1 shipped
+          # with exactly that defect before this step existed.
+          npm version "${{ steps.v.outputs.version }}" --no-git-tag-version --allow-same-version
+          npm run build
+
+      # Default mage target is build.BuildAll, which cross-compiles every platform.
+      # A single-platform zip would work on our own image and fail for anyone else.
+      - name: Build backend (all platforms)
+        run: |
+          go install github.com/magefile/mage@latest
+          mage -v
+
+      - name: Package
+        id: pkg
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          OUT="${PLUGIN_ID}-${VERSION}.zip"
+
+          # The exec bit is not preserved by every build path, and Grafana will not
+          # launch a backend it cannot execute -- the symptom is the plugin loading as
+          # frontend-only, with no error naming the cause.
+          chmod +x dist/gpx_* || true
+
+          mkdir -p pkg-root
+          cp -r dist "pkg-root/${PLUGIN_ID}"
+
+          # -r keeps the directory entry; zip preserves the exec bit on Linux.
+          ( cd pkg-root && zip -qr "../${OUT}" "${PLUGIN_ID}" )
+
+          # Grafana's catalog submission asks for the sha1 of the zip.
+          sha1sum "${OUT}" | cut -d' ' -f1 > "${OUT}.sha1"
+
+          echo "zip=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "### Packaged" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          unzip -l "${OUT}" | head -20 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Fail loudly here rather than shipping an archive that installs to nothing.
+      - name: Verify layout
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          unzip -l "$ZIP" | grep -q "${PLUGIN_ID}/plugin.json" \
+            || { echo "FATAL: ${PLUGIN_ID}/plugin.json missing -- wrong root directory"; exit 1; }
+          unzip -l "$ZIP" | grep -q "${PLUGIN_ID}/gpx_" \
+            || { echo "FATAL: no gpx_ backend binary -- plugin would load frontend-only"; exit 1; }
+          echo "layout OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.zip }}
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            ${{ steps.pkg.outputs.zip }}.sha1
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "${{ steps.pkg.outputs.zip }}" \
+            "${{ steps.pkg.outputs.zip }}.sha1" \
+          || gh release upload "${GITHUB_REF_NAME}" \
+            "${{ steps.pkg.outputs.zip }}" \
+            "${{ steps.pkg.outputs.zip }}.sha1" --clobber

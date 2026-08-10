@@ -88,9 +88,18 @@ func firstArg(args []string) string {
 // timeLiteral renders one end of the time range as the SQL literal appropriate to
 // how the column is stored: a bare integer for epoch columns, a quoted ISO-8601
 // string for native TIMESTAMP columns.
-func timeLiteral(t time.Time, format TimeFormat) string {
+//
+// origin shifts the bound for relative mode. The dashboard range there is expressed
+// as elapsed time measured from the epoch, so "00:00:20" means twenty seconds into
+// the run, and the rows that answer it are the ones at origin+20s in the stored
+// column. Adding the origin here is what keeps drag-zoom working on an elapsed axis;
+// without it the filter would look for data in 1970 and find none.
+//
+// Relative mode only makes sense for epoch columns. A native TIMESTAMP has no
+// integer to offset, so the origin is ignored rather than producing nonsense.
+func timeLiteral(t time.Time, format TimeFormat, origin int64) string {
 	if format.IsEpoch() {
-		return strconv.FormatInt(format.EpochValue(t), 10)
+		return strconv.FormatInt(format.EpochValue(t)+origin, 10)
 	}
 	return "'" + t.UTC().Format(time.RFC3339) + "'"
 }
@@ -100,7 +109,7 @@ func timeLiteral(t time.Time, format TimeFormat) string {
 //
 // sqlutil.Interpolate merges these over sqlutil.DefaultMacros, so ours win for the
 // names we define and the SDK's defaults remain for $__table / $__column.
-func buildMacros(format TimeFormat) sqlutil.Macros {
+func buildMacros(format TimeFormat, origin int64) sqlutil.Macros {
 	return sqlutil.Macros{
 		// $__timeFilter(col) -> col >= <from> AND col <= <to>
 		"timeFilter": func(q *sqlutil.Query, args []string) (string, error) {
@@ -109,14 +118,14 @@ func buildMacros(format TimeFormat) sqlutil.Macros {
 				return "", fmt.Errorf("$__timeFilter requires a column argument, e.g. $__timeFilter(timestamp)")
 			}
 			return fmt.Sprintf("%s >= %s AND %s <= %s",
-				col, timeLiteral(q.TimeRange.From, format),
-				col, timeLiteral(q.TimeRange.To, format)), nil
+				col, timeLiteral(q.TimeRange.From, format, origin),
+				col, timeLiteral(q.TimeRange.To, format, origin)), nil
 		},
 
 		// $__timeFrom() -> the range start as a literal.
 		// Also accepts $__timeFrom(col) -> `col >= <from>` for symmetry with the SDK.
 		"timeFrom": func(q *sqlutil.Query, args []string) (string, error) {
-			lit := timeLiteral(q.TimeRange.From, format)
+			lit := timeLiteral(q.TimeRange.From, format, origin)
 			if col := firstArg(args); col != "" {
 				return fmt.Sprintf("%s >= %s", col, lit), nil
 			}
@@ -125,7 +134,7 @@ func buildMacros(format TimeFormat) sqlutil.Macros {
 
 		// $__timeTo() -> the range end as a literal.
 		"timeTo": func(q *sqlutil.Query, args []string) (string, error) {
-			lit := timeLiteral(q.TimeRange.To, format)
+			lit := timeLiteral(q.TimeRange.To, format, origin)
 			if col := firstArg(args); col != "" {
 				return fmt.Sprintf("%s <= %s", col, lit), nil
 			}
@@ -162,9 +171,9 @@ func buildMacros(format TimeFormat) sqlutil.Macros {
 }
 
 // interpolate expands every macro in the raw SQL for the given query.
-func interpolate(rawSQL string, q *sqlutil.Query, format TimeFormat) (string, error) {
+func interpolate(rawSQL string, q *sqlutil.Query, format TimeFormat, origin int64) (string, error) {
 	q.RawSQL = rawSQL
-	out, err := sqlutil.Interpolate(q, buildMacros(format))
+	out, err := sqlutil.Interpolate(q, buildMacros(format, origin))
 	if err != nil {
 		return "", fmt.Errorf("macro expansion failed: %w", err)
 	}

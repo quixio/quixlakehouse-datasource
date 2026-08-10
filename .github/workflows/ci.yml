@@ -1,0 +1,110 @@
+# Build, lint and test gate.
+#
+# Split into independent jobs so a frontend lint failure does not mask a backend test
+# failure -- the two halves of this plugin fail for unrelated reasons.
+#
+# NOTE: there are currently no Go tests and no frontend tests. `go test ./...` passes
+# trivially with no test files, and `test:ci` runs jest with --passWithNoTests. This
+# workflow is therefore a real gate for lint/vet/typecheck/build today, and becomes a
+# real test gate as soon as tests land. CLAUDE.md names Go unit tests (macro expansion,
+# epoch conversion, Arrow->frame, error classification) as layer 1 and the place the
+# logic risk actually lives.
+
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+
+# A newer push to the same branch makes an in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # ci, not install: fails on a package-lock that disagrees with package.json
+      # rather than silently resolving something else.
+      - run: npm ci --no-audit --no-fund
+
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:ci
+
+      # Proves the webpack build works, which is what deploy/Dockerfile stage 1 does.
+      - run: npm run build
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go vet ./...
+
+      - name: go test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      # Installed with `go install` rather than golangci-lint-action, deliberately.
+      # The action ships a prebuilt binary, and a binary built with go1.24 refuses to
+      # analyse a module targeting go1.25 ("the Go language version used to build
+      # golangci-lint is lower than the targeted Go version"). Building from source
+      # uses this runner's toolchain, so it tracks go.mod automatically and cannot
+      # drift out of step again.
+      #
+      # /v2 in the module path matches `version: '2'` in .golangci.yml.
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          golangci-lint run ./...
+
+      # The plugin binary is what makes this datasource work server-side, so a build
+      # break here is the whole feature, not a detail.
+      - name: build plugin binary
+        run: |
+          go install github.com/magefile/mage@latest
+          mage -v build:linux
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Filesystem scan covers go.sum and package-lock.json without needing the image
+      # built first, so it runs in parallel with the other two jobs.
+      #
+      # Report-only for now (exit-code 0). Turning this into a blocking gate is a
+      # deliberate decision that needs a triage pass first -- failing CI on
+      # unactionable transitive CVEs trains people to ignore it.
+      # @master, not a pinned tag: aquasecurity/trivy-action's release tags are not
+      # reliably resolvable (0.28.0 does not exist as a ref, which failed the first
+      # run of this workflow). Their README recommends master. Acceptable here because
+      # the job is report-only -- a surprise from a floating action cannot break the
+      # build while exit-code stays 0.
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+          format: table

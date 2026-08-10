@@ -1,0 +1,93 @@
+- generic [ref=e8]:
+  - link "Skip to main content" [ref=e9] [cursor=pointer]:
+    - /url: "#pageContent"
+  - banner [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e13]:
+        - button "Main menu" [ref=e14] [cursor=pointer]
+        - link [ref=e19] [cursor=pointer]:
+          - /url: /
+          - img "Grafana" [ref=e20]
+        - navigation "Breadcrumbs" [ref=e21]:
+          - list [ref=e22]:
+            - listitem [ref=e23]:
+              - link "Dashboards" [ref=e24] [cursor=pointer]:
+                - /url: /dashboards
+            - listitem [ref=e28]:
+              - generic "New dashboard" [ref=e29]
+      - generic [ref=e30]:
+        - generic [ref=e32]:
+          - button "Search..." [ref=e36] [cursor=pointer]
+          - generic [ref=e37]: ctrl+k
+        - button "New" [ref=e39] [cursor=pointer]
+        - button "Help" [ref=e45] [cursor=pointer]
+        - button "Profile" [ref=e49] [cursor=pointer]:
+          - img "User avatar" [ref=e50]
+  - main [ref=e53]:
+    - log [ref=e54]
+    - generic [ref=e57]:
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - generic [ref=e61]:
+            - generic [ref=e62]:
+              - button "Move 3h backward" [ref=e63] [cursor=pointer]
+              - 'button "Time range selected: Last 6 hours" [ref=e66] [cursor=pointer]':
+                - generic [ref=e69]: Last 6 hours
+              - button "Move time range forwards" [ref=e74] [cursor=pointer]
+              - button "Zoom out time range" [ref=e77] [cursor=pointer]
+            - generic [ref=e80]:
+              - button "Refresh" [ref=e81] [cursor=pointer]
+              - button "Auto refresh turned off. Choose refresh time interval" [ref=e87] [cursor=pointer]
+          - button "Save" [ref=e91] [cursor=pointer]
+        - button "Add variable" [ref=e95] [cursor=pointer]
+      - generic [ref=e98]:
+        - generic [ref=e100]:
+          - region [ref=e109]:
+            - heading "New panel" [level=2] [ref=e112]
+            - generic [ref=e114]:
+              - generic: No visualization configured
+              - generic [ref=e115]:
+                - button "Configure visualization" [ref=e117] [cursor=pointer]
+                - button "Use library panel" [ref=e122] [cursor=pointer]
+          - generic [ref=e130]:
+            - button "Add panel" [ref=e131] [cursor=pointer]
+            - button "Group panels" [ref=e135] [cursor=pointer]
+        - generic [ref=e139]:
+          - generic [ref=e142]:
+            - generic [ref=e143]:
+              - generic [ref=e144]:
+                - button "Go back" [ref=e145] [cursor=pointer]
+                - generic [ref=e148]: Panel
+                - button "Undock" [ref=e149] [cursor=pointer]
+                - button "Close" [ref=e152] [cursor=pointer]
+              - generic [ref=e155]:
+                - button "Duplicate" [ref=e156] [cursor=pointer]
+                - button "Copy" [ref=e160] [cursor=pointer]
+                - button "Delete" [ref=e164] [cursor=pointer]
+            - generic [ref=e171]:
+              - button "Edit visualization" [ref=e173] [cursor=pointer]
+              - generic [ref=e177]:
+                - generic [ref=e178]:
+                  - generic [ref=e179]: Title
+                  - textbox "Title" [active] [ref=e187]: New panel
+                - generic [ref=e188]:
+                  - generic [ref=e189]: Description
+                  - textbox "Description" [ref=e195]
+                - generic [ref=e196]:
+                  - generic [ref=e197]: Transparent background
+                  - generic [ref=e203]:
+                    - switch "Transparent background" [ref=e204]
+                    - generic [ref=e205] [cursor=pointer]
+              - generic [ref=e207] [cursor=pointer]:
+                - heading "Repeat options" [level=3] [ref=e208]
+                - button "Expand Repeat options category" [ref=e209]
+              - heading "Show / hide rules" [level=3] [ref=e214]
+          - generic [ref=e221]:
+            - generic [ref=e222]:
+              - button "Add" [ref=e223] [cursor=pointer]
+              - button "Options" [ref=e227] [cursor=pointer]
+              - button "Give feedback on the new dashboard editing experience" [ref=e231] [cursor=pointer]
+              - button "Code" [ref=e235] [cursor=pointer]
+            - generic [ref=e239]:
+              - button "Outline" [ref=e240] [cursor=pointer]
+              - button "Hide" [ref=e245] [cursor=pointer]

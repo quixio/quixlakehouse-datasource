@@ -1,0 +1,92 @@
+# Builds the deployable Grafana image (plugin baked in) and publishes it to GHCR.
+#
+# Why an image and not just a release zip: the Quix Cloud environment that runs this
+# is backed by a DIFFERENT repo (the app folder lives there, the plugin source lives
+# here). Quix builds from the app folder as its Docker context, so it cannot compile
+# `src/` + `pkg/` from this repo. Publishing an image lets that app folder be a
+# one-line `FROM`, with no vendored copy of this source tree.
+#
+# amd64 only, deliberately: `deploy/Dockerfile` builds the backend via
+# `mage -v build:linux`, and Quix runs linux/amd64. A multi-arch manifest would need
+# the extra mage targets and buys nothing here.
+
+name: publish-image
+
+on:
+  # Real releases.
+  push:
+    tags:
+      - 'v*'
+    # Temporary: lets us test the deployment before there is anything to tag.
+    # Remove once v1 is cut.
+    branches:
+      - 'feature/sc-74412/**'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # Not the plugin id -- this is the deployable Grafana image, not the plugin artefact.
+  IMAGE_NAME: ${{ github.repository_owner }}/quixlakehouse-grafana
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to push to GHCR with the default GITHUB_TOKEN; without it the push
+      # fails with a 403 that reads like a credential problem.
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `latest` only on a real version tag, never from a branch build -- a branch
+          # push must not silently become what deployments pin to.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # A stable, predictable tag for branch builds. The auto branch tag
+            # mangles slashes into a 50-char string, which is miserable to reference
+            # from another repo's dockerfile. Testing deployments pin `:dev`.
+            type=raw,value=dev,enable=${{ startsWith(github.ref, 'refs/heads/') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # Repo root, NOT deploy/ -- the Dockerfile needs package.json, src/, pkg/.
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache in GitHub Actions: the three-stage build does npm ci +
+          # go mod download + `go install mage`, which is several minutes cold.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "### Published" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "GHCR packages are PRIVATE on first publish even for a public repo." >> $GITHUB_STEP_SUMMARY
+          echo "Make the package public once, or Quix will need registry credentials." >> $GITHUB_STEP_SUMMARY

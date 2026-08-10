@@ -21,11 +21,129 @@ export interface QuixLakeQuery extends DataQuery {
   format?: QueryFormat;
   timeColumn?: string;
   timeFormat?: TimeFormat;
+  /**
+   * Absolute wall-clock time, or an axis rebased so the run starts at zero.
+   *
+   * Relative works by moving the data to the epoch, because a Grafana time field is
+   * an offset from 1970 and there is no duration field type. The dashboard range is
+   * then read as elapsed as well, so zoom keeps working.
+   */
+  timeMode?: TimeMode;
+  /**
+   * The instant that becomes zero, in the time column's units.
+   *
+   * Stored in the panel rather than derived per request on purpose: an origin
+   * recomputed from the filtered rows moves on every zoom, so the window would always
+   * restart at zero and dragging would appear to do nothing.
+   */
+  timeOrigin?: number;
+  /** Which editor is showing. The backend never reads this. */
+  editorMode?: EditorMode;
+  /** Builder state. Kept alongside rawSql, not instead of it -- see below. */
+  builder?: BuilderState;
 }
 
+export type EditorMode = 'builder' | 'code';
+
+/** Must stay in sync with TimeMode in pkg/plugin/datasource.go. */
+export type TimeMode = 'absolute' | 'relative';
+
+/** Aggregates offered in the SELECT row. 'none' selects the raw column. */
+export type AggregateFn = 'none' | 'avg' | 'min' | 'max' | 'sum' | 'count';
+
+export type FilterOperator = '=' | '!=' | '>' | '<' | '>=' | '<=';
+
+export interface BuilderSelect {
+  column: string;
+  aggregate: AggregateFn;
+}
+
+export interface BuilderFilter {
+  key: string;
+  operator: FilterOperator;
+  value: string;
+}
+
+/**
+ * Visual builder state.
+ *
+ * IMPORTANT: the builder does not introduce a second query path. It generates
+ * `rawSql`, which is the only thing the backend ever executes. That keeps alert
+ * rules working -- an alert stores the generated SQL and evaluates it with no
+ * frontend in the loop, so a builder-only representation would simply not run there.
+ */
+export interface BuilderState {
+  table?: string;
+  timeColumn?: string;
+  select: BuilderSelect[];
+  filters: BuilderFilter[];
+  /** Emit GROUP BY $__timeGroup(timeColumn, interval), so buckets follow zoom. */
+  groupByTime: boolean;
+  /** Bucket width. $__interval means "whatever the panel is showing". */
+  interval: string;
+  /** Extra GROUP BY columns, e.g. a tag to split series by. */
+  groupByColumns: string[];
+  orderDescending: boolean;
+  limit?: number;
+}
+
+export const DEFAULT_BUILDER: BuilderState = {
+  select: [{ column: '', aggregate: 'avg' }],
+  filters: [],
+  groupByTime: true,
+  interval: '$__interval',
+  groupByColumns: [],
+  orderDescending: false,
+  limit: 1000,
+};
+
+/**
+ * Starter query for a new panel.
+ *
+ * Every line of this is defensive, because the default is what most users edit
+ * rather than replace:
+ *
+ *  - `$__timeGroup(<time_column>, $__interval)` buckets by the panel's own interval,
+ *    so the row count stays roughly constant as you zoom instead of growing with the
+ *    range. Expanded backend-side, so it behaves identically in an alert rule.
+ *  - `$__timeFilter(...)` bounds the scan to the dashboard time range. Without it the
+ *    query reads the whole table.
+ *  - The `year = ...` partition predicate is the one that actually matters here:
+ *    unpartitioned scans are the dominant failure mode against this lakehouse and are
+ *    killed by the ingress, not by our timeout.
+ *  - `LIMIT` caps the worst case even when the above are edited away.
+ *
+ * Placeholders are angle-bracketed so the query fails with an obvious "does not
+ * exist" naming the thing to change, rather than looking plausible and silently
+ * scanning something real.
+ */
+export const DEFAULT_SQL = `SELECT
+  $__timeGroup(<time_column>, $__interval) AS time,
+  avg(<value_column>) AS value
+FROM <table>
+WHERE $__timeFilter(<time_column>)
+  AND year = '2026'
+GROUP BY 1
+ORDER BY 1
+LIMIT 1000`;
+
 export const DEFAULT_QUERY: Partial<QuixLakeQuery> = {
+  // Open in the builder. rawSql stays EMPTY here on purpose: the builder generates
+  // it, and seeding a template would both fight the builder and make the editor
+  // open in Code mode, since a non-empty rawSql is what selects that view.
+  //
+  // The "safe default" still holds -- it just lives in DEFAULT_BUILDER now, which
+  // starts with time bucketing on at $__interval and LIMIT 1000, so the first query
+  // anyone generates is bounded and scales with zoom. DEFAULT_SQL remains the
+  // placeholder shown in Code mode.
+  editorMode: 'builder',
+  builder: DEFAULT_BUILDER,
   rawSql: '',
   format: 'time_series',
+  // Matches the `AS time` alias the builder emits. Set explicitly rather than
+  // relying on the backend's name heuristic: leaving it empty yields a plain number
+  // field and a panel that will not plot, with nothing on screen explaining why.
+  timeColumn: 'time',
   timeFormat: 'epoch_ms',
 };
 

@@ -5,10 +5,13 @@
 # for them.
 #
 # This stack does NOT run its own lakehouse. It joins the already-running
-# integration network so it can reach `flight-sql:32010` directly. Bring that up
-# first from the repo root:
+# integration network so it can reach the REST API at `api:80` directly. Bring that
+# up first from the Quix.DataLake.Timeseries repo root:
 #
-#   docker compose -f docker-compose.integration-test.yml up -d flight-sql
+#   docker compose -f docker-compose.integration-test.yml up -d api
+#
+# (An earlier revision targeted `flight-sql:32010`; the transport was changed to
+# REST. ARCHITECTURE.md records why Flight was built and then reversed.)
 #
 # Host port is 3002 because the integration stack's own Grafana already owns 3001.
 #
