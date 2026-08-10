@@ -177,6 +177,39 @@ func TestPartitionColumnsUnpartitionedTable(t *testing.T) {
 	}
 }
 
+// sc-74412 requires that __index_level_0__ is never offered as a selectable column.
+// It is a pandas/Arrow round-trip artefact, as is __key.
+func TestSchemaHidesInternalColumns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != pathSchema {
+			t.Errorf("path = %q, want %q", got, pathSchema)
+		}
+		_, _ = w.Write([]byte(`{"columns":[
+			{"name":"ts_ms","type":"long","nullable":true},
+			{"name":"__key","type":"string","nullable":true},
+			{"name":"value","type":"double","nullable":true},
+			{"name":"__index_level_0__","type":"long","nullable":true}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(srv.URL, "").Schema(context.Background(), "can_signals")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("columns = %v, want only ts_ms and value", got)
+	}
+	for _, c := range got {
+		if c.Name == "__index_level_0__" || c.Name == "__key" {
+			t.Errorf("%q should have been filtered out", c.Name)
+		}
+	}
+	// Types must survive: the editor uses them to decide what can be a time column.
+	if got[0].Name != "ts_ms" || got[0].Type != "long" {
+		t.Errorf("first column = %+v, want ts_ms/long", got[0])
+	}
+}
+
 // An HTML error page from a proxy must not be mistaken for a result. This is a real
 // shape: the ingress returns "Bad Gateway" as text/html when it cuts a request off.
 func TestPartitionValuesRejectsNonJSONBody(t *testing.T) {

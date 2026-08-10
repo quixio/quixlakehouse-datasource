@@ -34,6 +34,8 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		return d.handlePartitionInfo(ctx, req, sender)
 	case path == pathTables && req.Method == http.MethodGet:
 		return d.handleTables(ctx, sender)
+	case path == pathSchema && req.Method == http.MethodGet:
+		return d.handleSchema(ctx, req, sender)
 	default:
 		return sendJSON(sender, http.StatusNotFound, map[string]string{
 			"error": "no such resource: " + req.Method + " " + path,
@@ -129,6 +131,38 @@ func (d *Datasource) handleTables(ctx context.Context, sender backend.CallResour
 		return sendJSON(sender, status, map[string]string{"error": msg})
 	}
 	return sendJSON(sender, http.StatusOK, map[string]any{"tables": tables})
+}
+
+// handleSchema lists a table's columns with their types, for the SELECT and
+// TIME COLUMN dropdowns.
+func (d *Datasource) handleSchema(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	params, err := url.ParseQuery(req.URL)
+	if err != nil {
+		return sendJSON(sender, http.StatusBadRequest, map[string]string{
+			"error": "could not parse query parameters: " + err.Error(),
+		})
+	}
+	params = stripPathFromQuery(params)
+
+	table := params.Get("table")
+	if table == "" {
+		return sendJSON(sender, http.StatusBadRequest, map[string]string{"error": "'table' is required"})
+	}
+
+	cols, err := d.client.Schema(ctx, table)
+	if err != nil {
+		msg, _ := classifyError(err, d.baseURL)
+		log.DefaultLogger.Warn("schema lookup failed", "table", table, "err", err)
+
+		status := http.StatusBadGateway
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 {
+			status = apiErr.StatusCode
+		}
+		return sendJSON(sender, status, map[string]string{"error": msg})
+	}
+
+	return sendJSON(sender, http.StatusOK, map[string]any{"table": table, "columns": cols})
 }
 
 // handlePartitionInfo lists the columns a table is partitioned by, so the query

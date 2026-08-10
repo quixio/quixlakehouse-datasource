@@ -139,6 +139,51 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
     return partitionColumns.find((c) => !used.has(c)) ?? '';
   };
 
+  // Table schema, loaded with the table for the same reason as the partition columns:
+  // SELECT and TIME COLUMN should offer real columns rather than a blank box. The
+  // backend already strips __index_level_0__ and __key from this list.
+  const [schema, setSchema] = useState<{ table: string; columns: Array<{ name: string; type: string }> }>({
+    table: '',
+    columns: [],
+  });
+  const columnsForTable = schema.table === table ? schema.columns : [];
+
+  useEffect(() => {
+    if (!table) {
+      return;
+    }
+    let cancelled = false;
+    datasource
+      .getResource('schema', { table })
+      .then((res) => {
+        if (!cancelled) {
+          setSchema({ table, columns: res?.columns ?? [] });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSchema({ table, columns: [] });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [table, datasource]);
+
+  // Type shown alongside the name: picking a value column is guesswork otherwise, and
+  // it is the difference between a plottable series and a string column.
+  const columnOptions: Array<SelectableValue<string>> = columnsForTable.map((c) => ({
+    label: c.name,
+    value: c.name,
+    description: c.type,
+  }));
+
+  // A time column has to be an epoch integer or a real timestamp. Offering strings
+  // here produces a panel that silently will not plot.
+  const timeColumnOptions = columnsForTable
+    .filter((c) => /^(long|int|bigint|double|float|timestamp|date)/i.test(c.type))
+    .map((c) => ({ label: c.name, value: c.name, description: c.type }));
+
   return (
     <Stack direction="column" gap={0.5}>
       <InlineFieldRow>
@@ -170,12 +215,16 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           interactive
           tooltip="Column holding the timestamp. Drives $__timeFilter and the time bucket. Usually epoch milliseconds in this lakehouse."
         >
-          <Input
-            value={builder.timeColumn ?? ''}
+          <Select
+            options={timeColumnOptions}
+            value={builder.timeColumn ? { label: builder.timeColumn, value: builder.timeColumn } : null}
             placeholder="ts_ms"
             width={24}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => set({ timeColumn: e.target.value })}
-            onBlur={onRunQuery}
+            allowCustomValue
+            onChange={(v) => {
+              set({ timeColumn: v?.value ?? '' });
+              onRunQuery();
+            }}
           />
         </InlineField>
       </InlineFieldRow>
@@ -187,16 +236,18 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
               to align with the first row, visually grouping all SELECT fields together.
               This is the same pattern Grafana's InfluxQL editor uses. */}
           <InlineField label={i === 0 ? 'SELECT' : ''} labelWidth={LABEL_WIDTH}>
-            <Input
-              value={sel.column}
+            <Select
+              options={columnOptions}
+              value={sel.column ? { label: sel.column, value: sel.column } : null}
               placeholder="field"
               width={30}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+              allowCustomValue
+              onChange={(v) => {
                 const next = [...builder.select];
-                next[i] = { ...next[i], column: e.target.value };
+                next[i] = { ...next[i], column: v?.value ?? '' };
                 set({ select: next });
+                onRunQuery();
               }}
-              onBlur={onRunQuery}
             />
           </InlineField>
           <InlineField>

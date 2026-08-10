@@ -29,10 +29,59 @@ const (
 	pathPartitionInfo   = "/partition-info"
 	pathPartitions      = "/partitions"
 	pathTables          = "/tables"
+	pathSchema          = "/schema"
 )
 
 type tablesResponse struct {
 	Tables []string `json:"tables"`
+}
+
+// Column is one column of a table's schema.
+type Column struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type schemaResponse struct {
+	Columns []Column `json:"columns"`
+}
+
+// internalColumns are written by the sink and the Arrow/pandas round trip, not by the
+// user, and are never something anyone means to plot. Hiding them from the builder is
+// an explicit requirement on sc-74412 for __index_level_0__; __key is the same class
+// of artefact. They remain queryable in raw SQL -- this only removes them from the
+// suggestions.
+var internalColumns = map[string]bool{
+	"__index_level_0__": true,
+	"__key":             true,
+}
+
+// Schema lists a table's columns, for the builder's SELECT and TIME COLUMN dropdowns.
+//
+// This is the only way to get non-partition columns: DESCRIBE fails against this API
+// ("Table with name X does not exist") because it resolves table names itself rather
+// than registering them in DuckDB's catalog, and SELECT * LIMIT 1 costs a real query --
+// 15.8s on rawdata.
+func (c *RESTClient) Schema(ctx context.Context, table string) ([]Column, error) {
+	if strings.TrimSpace(table) == "" {
+		return nil, fmt.Errorf("table is required")
+	}
+	q := url.Values{}
+	q.Set("table", table)
+
+	var out schemaResponse
+	if err := c.getJSON(ctx, pathSchema, q, &out); err != nil {
+		return nil, err
+	}
+
+	cols := make([]Column, 0, len(out.Columns))
+	for _, col := range out.Columns {
+		if internalColumns[col.Name] {
+			continue
+		}
+		cols = append(cols, col)
+	}
+	return cols, nil
 }
 
 // Tables lists the tables in the catalog, for the builder's FROM dropdown.
