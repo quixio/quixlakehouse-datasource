@@ -19,6 +19,27 @@ import { QueryBuilder } from './QueryBuilder';
 
 type Props = QueryEditorProps<DataSource, QuixLakeQuery, QuixLakeDataSourceOptions>;
 
+/**
+ * How many of the column's units make up one millisecond.
+ *
+ * null for a native TIMESTAMP, which has no integer unit to scale -- the origin is
+ * ignored there rather than converted into nonsense.
+ */
+function unitsPerMillisecond(format: TimeFormat): number | null {
+  switch (format) {
+    case 'epoch_s':
+      return 1 / 1000;
+    case 'epoch_ms':
+      return 1;
+    case 'epoch_us':
+      return 1000;
+    case 'epoch_ns':
+      return 1_000_000;
+    default:
+      return null;
+  }
+}
+
 // Must match QueryBuilder's LABEL_WIDTH so the Format / Time column / Time format
 // rows below the builder share one label gutter. See the note there for why 18.
 const LABEL_WIDTH = 18;
@@ -101,8 +122,32 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     onRunQuery();
   };
 
+  /**
+   * Changing the epoch unit rescales the origin.
+   *
+   * The origin is stored in the time column's own units, because that is what the
+   * backend subtracts from the stored value and adds to the range bounds. Leaving the
+   * number alone when the unit changes silently reinterprets it: an origin detected as
+   * 1785925833288 ms, read as seconds, is about 56,000 years out and the panel goes
+   * blank with nothing on screen explaining why.
+   */
   const onTimeFormatChange = (selected: SelectableValue<TimeFormat>) => {
-    onChange({ ...query, timeFormat: selected.value ?? 'epoch_ms' });
+    const nextFormat = selected.value ?? 'epoch_ms';
+    const patch: Partial<QuixLakeQuery> = { timeFormat: nextFormat };
+
+    const origin = query.timeOrigin;
+    const prevFormat = query.timeFormat ?? 'epoch_ms';
+    if (typeof origin === 'number' && origin !== 0 && prevFormat !== nextFormat) {
+      const perMs = unitsPerMillisecond(prevFormat);
+      const nextPerMs = unitsPerMillisecond(nextFormat);
+      // Both null means one of them is a native TIMESTAMP, where the origin has no
+      // integer meaning; leave the value untouched rather than invent a conversion.
+      if (perMs !== null && nextPerMs !== null) {
+        patch.timeOrigin = Math.round((origin / perMs) * nextPerMs);
+      }
+    }
+
+    onChange({ ...query, ...patch });
     onRunQuery();
   };
 
@@ -161,22 +206,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const [detecting, setDetecting] = useState(false);
 
-  /** The current clock in the time column's own units. */
+  /**
+   * The current clock in the time column's own units.
+   *
+   * Getting this wrong is not subtle: an epoch-seconds column given a millisecond
+   * value lands roughly 55,000 years out.
+   */
   const nowInColumnUnits = (): number => {
-    const nowMs = Date.now();
-    const fmt = query.timeFormat ?? 'epoch_ms';
-    // Getting this wrong is not subtle: an epoch-seconds column given a millisecond
-    // origin lands roughly 55,000 years out.
-    switch (fmt) {
-      case 'epoch_s':
-        return Math.floor(nowMs / 1000);
-      case 'epoch_us':
-        return nowMs * 1000;
-      case 'epoch_ns':
-        return nowMs * 1_000_000;
-      default:
-        return nowMs;
-    }
+    const perMs = unitsPerMillisecond(query.timeFormat ?? 'epoch_ms');
+    return Math.round(Date.now() * (perMs ?? 1));
   };
 
   /**
