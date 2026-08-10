@@ -146,9 +146,13 @@ Cloud.
 
 ## Contributing flow
 
-`main` is owned by `@quixio/customer-success` via `.github/CODEOWNERS`, with
-`@quixio/quix-saas` co-listed on `/pkg/` and the build/publish paths. Changes go
-through a pull request with code-owner approval.
+Changes go through a pull request.
+
+There is deliberately **no `.github/CODEOWNERS`**. It was removed because it notified
+every listed team on every commit while the plugin was under active development, and
+the noise was worse than the protection it bought on a repo with one author. If
+outside contributors ever start opening PRs, reinstate it — a branch ruleset alone
+does not stop a maintainer merging their own work unreviewed.
 
 ## Billing awareness
 
