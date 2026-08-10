@@ -118,6 +118,33 @@ func (f TimeFormat) EpochToTimestampExpr(column string) string {
 	}
 }
 
+// OriginDuration converts an origin, expressed in the time column's own units, into
+// a wall-clock duration.
+//
+// Needed because the origin is not always subtracted from a raw epoch integer.
+// $__timeGroup wraps the column in time_bucket(), which returns a native TIMESTAMP,
+// so the value reaching frame conversion is already a time.Time and there is no
+// integer left to offset -- it has to be shifted as a duration instead. Missing this
+// is why relative mode appeared to do nothing the moment GROUP BY time was switched
+// on: the numeric path rebased, the timestamp path silently did not.
+//
+// A native TIMESTAMP column (TimeFormatTimestamp) returns 0: its values never passed
+// through an epoch, so an origin in epoch units has no meaning for it.
+func (f TimeFormat) OriginDuration(origin int64) time.Duration {
+	switch f.Normalize() {
+	case TimeFormatEpochSecs:
+		return time.Duration(origin) * time.Second
+	case TimeFormatEpochMicros:
+		return time.Duration(origin) * time.Microsecond
+	case TimeFormatEpochNanos:
+		return time.Duration(origin) * time.Nanosecond
+	case TimeFormatTimestamp:
+		return 0
+	default:
+		return time.Duration(origin) * time.Millisecond
+	}
+}
+
 // timeColumnNameHints are the column names treated as a time column when the query
 // model does not name one explicitly. Mirrors the set already used server-side in
 // quix-ts-datalake-api/grafana_query_builder.py so a migrated panel behaves the same.

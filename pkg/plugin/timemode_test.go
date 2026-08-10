@@ -91,6 +91,49 @@ func TestOriginIgnoredForNativeTimestampColumns(t *testing.T) {
 	}
 }
 
+// Regression: relative mode worked on raw epoch columns but silently did nothing the
+// moment GROUP BY time was switched on. $__timeGroup wraps the column in
+// time_bucket(), which returns a native TIMESTAMP, and only the numeric branches of
+// frame conversion subtracted the origin -- so every bucketed point stayed at
+// 1970-01-01. The shift has to be applied as a duration once there is no epoch
+// integer left.
+func TestOriginDurationMatchesTheColumnUnits(t *testing.T) {
+	cases := []struct {
+		format TimeFormat
+		origin int64
+		want   time.Duration
+	}{
+		{TimeFormatEpochMillis, 1500, 1500 * time.Millisecond},
+		{TimeFormatEpochSecs, 90, 90 * time.Second},
+		{TimeFormatEpochMicros, 2_000_000, 2 * time.Second},
+		{TimeFormatEpochNanos, 5_000_000_000, 5 * time.Second},
+		// A native TIMESTAMP never passed through an epoch, so an origin expressed in
+		// epoch units means nothing for it.
+		{TimeFormatTimestamp, 1234, 0},
+	}
+	for _, c := range cases {
+		if got := c.format.OriginDuration(c.origin); got != c.want {
+			t.Errorf("%s.OriginDuration(%d) = %v, want %v", c.format, c.origin, got, c.want)
+		}
+	}
+}
+
+// A negative origin is the "end at now" anchor: origin = max - now is large and
+// negative, and shifting by it must move the data forward, not backward.
+func TestOriginDurationHandlesTheEndAtNowAnchor(t *testing.T) {
+	// max(t_rel)=60s, now ~1.786e9 s -> origin is about -1.786e9 seconds.
+	const origin int64 = 60 - 1786372466
+	got := TimeFormatEpochSecs.OriginDuration(origin)
+	if got >= 0 {
+		t.Fatalf("expected a negative duration, got %v", got)
+	}
+	// Subtracting a negative duration moves a 1970 instant up to roughly now.
+	shifted := time.UnixMilli(0).UTC().Add(-got)
+	if shifted.Year() != 2026 {
+		t.Errorf("shifted to %v, expected 2026", shifted)
+	}
+}
+
 func TestTimeModeNormalize(t *testing.T) {
 	cases := map[TimeMode]TimeMode{
 		"":          TimeModeAbsolute,
