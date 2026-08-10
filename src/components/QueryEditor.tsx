@@ -1,5 +1,5 @@
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
-import { Button, InlineField, Input, RadioButtonGroup, Select, Stack, TextArea } from '@grafana/ui';
+import { Alert, Button, InlineField, Input, RadioButtonGroup, Select, Stack, TextArea } from '@grafana/ui';
 import React, { ChangeEvent, useState } from 'react';
 
 import { buildSQL } from '../builder/sql';
@@ -238,6 +238,16 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           width={28}
         />
       </InlineField>
+
+      {(query.timeMode ?? 'absolute') === 'relative' && (
+        <Alert severity="info" title="Relative mode moves the data to 1970">
+          Subtracting the origin is what makes the run start at zero, and zero is the Unix epoch — Grafana has no
+          duration axis. So the dashboard range has to move too: set the timezone to <strong>UTC</strong> and an
+          absolute range starting at <strong>1970-01-01 00:00:00</strong>, long enough to cover the run. Until you do,
+          the panel is empty because the data now sits outside the visible window. Do not put an alert rule on a
+          relative panel.
+        </Alert>
+      )}
 
       {(query.timeMode ?? 'absolute') === 'relative' && (
         <InlineField

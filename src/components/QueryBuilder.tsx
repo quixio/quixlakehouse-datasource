@@ -32,6 +32,11 @@ const OPERATOR_OPTIONS: Array<SelectableValue<FilterOperator>> = ['=', '!=', '>'
 // means the column the editor suggests first is the one the backend would have picked.
 const TIME_NAME_HINTS = new Set(['time', 'timestamp', 'ts', 'ts_ms', 'datetime', 'date', 'event_time']);
 
+const GROUP_BY_OPTIONS: Array<SelectableValue<string>> = [
+  { label: 'time', value: 'time' },
+  { label: 'none', value: 'none' },
+];
+
 const ORDER_OPTIONS: Array<SelectableValue<string>> = [
   { label: 'ascending', value: 'asc' },
   { label: 'descending', value: 'desc' },
@@ -278,7 +283,7 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           <InlineField>
             <Select
               options={AGGREGATE_OPTIONS}
-              value={sel.aggregate}
+              value={AGGREGATE_OPTIONS.find((o) => o.value === sel.aggregate)}
               width={20}
               onChange={(v) => {
                 const next = [...builder.select];
@@ -371,11 +376,8 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           tooltip="Bucket by time. $__interval follows the dashboard zoom, so the row count stays flat as you widen the range."
         >
           <Select
-            options={[
-              { label: 'time', value: 'time' },
-              { label: 'none', value: 'none' },
-            ]}
-            value={builder.groupByTime ? 'time' : 'none'}
+            options={GROUP_BY_OPTIONS}
+            value={GROUP_BY_OPTIONS.find((o) => o.value === (builder.groupByTime ? 'time' : 'none'))}
             width={16}
             onChange={(v) => {
               set({ groupByTime: v.value === 'time' });
@@ -387,11 +389,21 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           <InlineField>
             <Select
               options={INTERVAL_OPTIONS}
-              value={builder.interval}
+              // A SelectableValue, not a bare string. With allowCustomValue set, a
+              // raw value that does not match an option is treated as "nothing
+              // selected", so the control showed a stale label and the change never
+              // reached builder.interval -- the same defect ORDER BY had with a
+              // boolean value.
+              value={
+                INTERVAL_OPTIONS.find((o) => o.value === builder.interval) ?? {
+                  label: builder.interval,
+                  value: builder.interval,
+                }
+              }
               width={28}
               allowCustomValue
               onChange={(v) => {
-                set({ interval: v.value ?? '$__interval' });
+                set({ interval: v?.value ?? '$__interval' });
                 onRunQuery();
               }}
             />
@@ -549,7 +561,7 @@ function FilterRow({
       <InlineField>
         <Select
           options={OPERATOR_OPTIONS}
-          value={filter.operator}
+          value={OPERATOR_OPTIONS.find((o) => o.value === filter.operator)}
           width={10}
           onChange={(v) => {
             onChange({ ...filter, operator: v.value ?? '=' });

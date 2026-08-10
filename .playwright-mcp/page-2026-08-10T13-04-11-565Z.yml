@@ -1,0 +1,273 @@
+- generic [ref=f18e8]:
+  - link "Skip to main content" [ref=f18e9] [cursor=pointer]:
+    - /url: "#pageContent"
+  - generic [ref=f18e11]:
+    - generic [ref=f18e12]:
+      - generic [ref=f18e13]:
+        - link [ref=f18e14] [cursor=pointer]:
+          - /url: /
+          - img "Grafana" [ref=f18e15]
+        - generic [ref=f18e16]: Grafana
+      - button "Undock menu" [ref=f18e17] [cursor=pointer]
+      - button "Close menu" [ref=f18e20] [cursor=pointer]
+    - navigation [ref=f18e23]:
+      - list "Navigation" [ref=f18e27]:
+        - listitem [ref=f18e28]:
+          - link [ref=f18e32] [cursor=pointer]:
+            - /url: /
+            - paragraph [ref=f18e37]: Home
+        - listitem [ref=f18e38]:
+          - generic [ref=f18e39]:
+            - link [ref=f18e42] [cursor=pointer]:
+              - /url: /bookmarks
+              - paragraph [ref=f18e47]: Bookmarks
+            - 'button "Expand section: Bookmarks" [ref=f18e49] [cursor=pointer]'
+        - listitem [ref=f18e52]:
+          - generic [ref=f18e53]:
+            - link [ref=f18e56] [cursor=pointer]:
+              - /url: /dashboards?starred
+              - paragraph [ref=f18e61]: Starred
+            - 'button "Expand section: Starred" [ref=f18e63] [cursor=pointer]'
+        - listitem [ref=f18e66]:
+          - generic [ref=f18e67]:
+            - link [ref=f18e70] [cursor=pointer]:
+              - /url: /dashboards
+              - paragraph [ref=f18e75]: Dashboards
+            - 'button "Expand section: Dashboards" [ref=f18e77] [cursor=pointer]'
+        - listitem [ref=f18e80]:
+          - link [ref=f18e84] [cursor=pointer]:
+            - /url: /explore
+            - paragraph [ref=f18e89]: Explore
+        - listitem [ref=f18e90]:
+          - generic [ref=f18e91]:
+            - link [ref=f18e94] [cursor=pointer]:
+              - /url: /drilldown
+              - paragraph [ref=f18e102]: Drilldown
+            - 'button "Expand section: Drilldown" [ref=f18e104] [cursor=pointer]'
+        - listitem [ref=f18e107]:
+          - generic [ref=f18e108]:
+            - link [ref=f18e111] [cursor=pointer]:
+              - /url: /alerting
+              - paragraph [ref=f18e116]: Alerting
+            - 'button "Expand section: Alerting" [ref=f18e118] [cursor=pointer]'
+        - listitem [ref=f18e121]:
+          - generic [ref=f18e122]:
+            - link [ref=f18e125] [cursor=pointer]:
+              - /url: /connections
+              - paragraph [ref=f18e130]: Connections
+            - 'button "Expand section: Connections" [ref=f18e132] [cursor=pointer]'
+        - listitem [ref=f18e135]:
+          - generic [ref=f18e136]:
+            - link [ref=f18e139] [cursor=pointer]:
+              - /url: /admin
+              - paragraph [ref=f18e144]: Administration
+            - 'button "Expand section: Administration" [ref=f18e146] [cursor=pointer]'
+  - banner [ref=f18e149]:
+    - generic [ref=f18e150]:
+      - navigation "Breadcrumbs" [ref=f18e152]:
+        - list [ref=f18e153]:
+          - listitem [ref=f18e154]:
+            - link "Dashboards" [ref=f18e155] [cursor=pointer]:
+              - /url: /dashboards
+          - listitem [ref=f18e159]:
+            - link "New dashboard" [ref=f18e378] [cursor=pointer]:
+              - /url: /dashboard/new?orgId=1&from=now-6h&to=now&timezone=browser
+          - listitem [ref=f18e382]:
+            - generic "Edit panel" [ref=f18e383]
+      - generic [ref=f18e161]:
+        - generic [ref=f18e163]:
+          - button "Search..." [ref=f18e167] [cursor=pointer]
+          - generic [ref=f18e168]: ctrl+k
+        - button "New" [ref=f18e170] [cursor=pointer]
+        - button "Help" [ref=f18e176] [cursor=pointer]
+        - button "Profile" [ref=f18e180] [cursor=pointer]:
+          - img "User avatar" [ref=f18e181]
+    - generic [ref=f18e388]:
+      - button "Back to dashboard" [ref=f18e390] [cursor=pointer]
+      - button "Discard panel" [disabled] [ref=f18e395]
+      - button "Save" [ref=f18e398] [cursor=pointer]
+  - main [ref=f18e184]:
+    - log [ref=f18e185]
+    - generic [ref=f18e400]:
+      - generic [ref=f18e402]:
+        - generic [ref=f18e404]:
+          - generic [ref=f18e406]:
+            - generic [ref=f18e407]:
+              - button "Move 3h backward" [ref=f18e408] [cursor=pointer]
+              - 'button "Time range selected: Last 6 hours" [ref=f18e411] [cursor=pointer]':
+                - generic [ref=f18e414]: Last 6 hours
+              - button "Move time range forwards" [ref=f18e419] [cursor=pointer]
+              - button "Zoom out time range" [ref=f18e422] [cursor=pointer]
+            - generic [ref=f18e425]:
+              - button "Refresh" [ref=f18e426] [cursor=pointer]
+              - button "Auto refresh turned off. Choose refresh time interval" [ref=f18e432] [cursor=pointer]
+          - generic [ref=f18e436]:
+            - generic [ref=f18e437] [cursor=pointer]: Table view
+            - generic [ref=f18e438]:
+              - switch "Toggle table view" [ref=f18e439]
+              - generic [ref=f18e440] [cursor=pointer]
+        - generic [ref=f18e441]:
+          - region [ref=f18e446]:
+            - generic [ref=f18e447]:
+              - heading "New panel" [level=2] [ref=f18e449]
+              - button "Menu for panel New panel" [ref=f18e450] [cursor=pointer]
+            - paragraph [ref=f18e457]: Run a query to visualize it here or go to all visualizations to add other panel types
+          - separator "Pane resize widget" [ref=f18e458]
+          - generic [ref=f18e460]:
+            - tablist [ref=f18e462]:
+              - tab "Queries1" [selected] [ref=f18e464] [cursor=pointer]
+              - tab "Transformations0" [ref=f18e468] [cursor=pointer]
+            - generic [ref=f18e476]:
+              - generic [ref=f18e478]:
+                - generic [ref=f18e479]: Data source
+                - generic [ref=f18e484] [cursor=pointer]:
+                  - img "QuixLakeHouse logo" [ref=f18e486]
+                  - textbox "Select a data source" [ref=f18e487]:
+                    - /placeholder: QuixLakeHouse
+                - button "Open data source help" [ref=f18e492] [cursor=pointer]
+                - generic [ref=f18e498]:
+                  - button "Expand query row" [ref=f18e499] [cursor=pointer]
+                  - generic [ref=f18e502] [cursor=pointer]: Query options
+                  - generic [ref=f18e504]: MD = auto = 500
+                  - generic [ref=f18e505]: Interval = 30s
+                - button "Query inspector" [ref=f18e507] [cursor=pointer]
+              - generic [ref=f18e511]:
+                - generic [ref=f18e513]:
+                  - generic [ref=f18e514]:
+                    - button "Collapse query row" [expanded] [ref=f18e515] [cursor=pointer]
+                    - generic [ref=f18e518]:
+                      - button "A" [ref=f18e519] [cursor=pointer]
+                      - emphasis [ref=f18e521]: (QuixLakeHouse)
+                  - generic [ref=f18e522]:
+                    - button "Duplicate query" [ref=f18e524] [cursor=pointer]
+                    - button "Hide response" [ref=f18e528] [cursor=pointer]
+                    - button "Remove query" [ref=f18e532] [cursor=pointer]
+                    - button "Drag and drop to reorder" [ref=f18e535]:
+                      - img "Drag and drop to reorder" [ref=f18e536]
+                - generic [ref=f18e540]:
+                  - radiogroup [ref=f18e542]:
+                    - generic [ref=f18e543]:
+                      - radio "Builder" [checked] [ref=f18e544] [cursor=pointer]
+                      - generic "Builder" [ref=f18e545] [cursor=pointer]
+                    - generic [ref=f18e547]:
+                      - radio "Code" [ref=f18e548] [cursor=pointer]
+                      - generic "Code" [ref=f18e549] [cursor=pointer]
+                  - generic [ref=f18e551]:
+                    - generic [ref=f18e552]:
+                      - generic [ref=f18e553]:
+                        - generic [ref=f18e554]: FROM
+                        - generic [ref=f18e558] [cursor=pointer]:
+                          - log [ref=f18e560]
+                          - generic [ref=f18e562]:
+                            - generic [ref=f18e563]: select table
+                            - combobox "FROM" [ref=f18e565]
+                      - generic [ref=f18e569]:
+                        - generic [ref=f18e570]: TIME COLUMN
+                        - generic [ref=f18e574] [cursor=pointer]:
+                          - log [ref=f18e576]
+                          - generic [ref=f18e578]:
+                            - generic [ref=f18e579]: ts_ms
+                            - combobox "TIME COLUMN" [ref=f18e581]
+                    - generic [ref=f18e585]:
+                      - generic [ref=f18e586]:
+                        - generic [ref=f18e587]: SELECT
+                        - generic [ref=f18e589] [cursor=pointer]:
+                          - log [ref=f18e591]
+                          - generic [ref=f18e593]:
+                            - generic [ref=f18e594]: field
+                            - combobox "SELECT" [ref=f18e596]
+                      - generic [ref=f18e602] [cursor=pointer]:
+                        - log [ref=f18e604]
+                        - generic [ref=f18e606]:
+                          - generic [ref=f18e607]: mean
+                          - combobox [ref=f18e609]
+                      - generic [ref=f18e613]:
+                        - button "remove field" [ref=f18e614] [cursor=pointer]
+                        - button "add field" [ref=f18e617] [cursor=pointer]
+                    - generic [ref=f18e621]:
+                      - generic [ref=f18e622]: WHERE
+                      - button "add filter" [ref=f18e626] [cursor=pointer]
+                    - generic [ref=f18e629]:
+                      - generic [ref=f18e630]:
+                        - generic [ref=f18e631]: GROUP BY
+                        - generic [ref=f18e635] [cursor=pointer]:
+                          - log [ref=f18e637]
+                          - generic [ref=f18e639]:
+                            - generic [ref=f18e640]: time
+                            - combobox "GROUP BY" [ref=f18e642]
+                      - generic [ref=f18e648] [cursor=pointer]:
+                        - log [ref=f18e650]
+                        - generic [ref=f18e652]:
+                          - generic [ref=f18e653]: $__interval (follows zoom)
+                          - combobox [ref=f18e655]
+                      - generic [ref=f18e659]:
+                        - generic [ref=f18e660]: split by
+                        - textbox "split by" [ref=f18e666]:
+                          - /placeholder: e.g. rotorID
+                    - generic [ref=f18e667]:
+                      - generic [ref=f18e668]:
+                        - generic [ref=f18e669]: ORDER BY TIME
+                        - generic [ref=f18e671] [cursor=pointer]:
+                          - log [ref=f18e673]
+                          - generic [ref=f18e675]:
+                            - generic [ref=f18e676]: ascending
+                            - combobox "ORDER BY TIME" [ref=f18e678]
+                      - generic [ref=f18e682]:
+                        - generic [ref=f18e683]: LIMIT
+                        - spinbutton "LIMIT" [ref=f18e689]: "1000"
+                    - generic [ref=f18e690]:
+                      - generic [ref=f18e691]: Generated SQL
+                      - textbox "Generated SQL" [ref=f18e695]
+                  - generic [ref=f18e696]:
+                    - generic [ref=f18e697]: Format
+                    - generic [ref=f18e701] [cursor=pointer]:
+                      - log [ref=f18e703]
+                      - generic [ref=f18e705]:
+                        - generic [ref=f18e706]: Time series
+                        - combobox "Format" [ref=f18e708]
+                  - generic [ref=f18e712]:
+                    - generic [ref=f18e713]: Time column
+                    - textbox "Time column" [ref=f18e719]:
+                      - /placeholder: time (auto-detected if empty)
+                  - generic [ref=f18e720]:
+                    - generic [ref=f18e721]: Time format
+                    - generic [ref=f18e725] [cursor=pointer]:
+                      - log [ref=f18e727]
+                      - generic [ref=f18e729]:
+                        - generic [ref=f18e730]: Epoch milliseconds
+                        - combobox "Time format" [ref=f18e732]
+                  - generic [ref=f18e736]:
+                    - generic [ref=f18e737]: Time mode
+                    - generic [ref=f18e741] [cursor=pointer]:
+                      - log [ref=f18e743]
+                      - generic [ref=f18e745]:
+                        - generic [ref=f18e746]: Absolute
+                        - combobox "Time mode" [ref=f18e748]
+              - generic [ref=f18e752]:
+                - button "Add query" [ref=f18e753] [cursor=pointer]
+                - button "Expression" [ref=f18e757] [cursor=pointer]
+      - separator "Pane resize widget" [ref=f18e761]
+      - generic [ref=f18e763]:
+        - tablist [ref=f18e765]:
+          - tab "Suggestions" [selected] [ref=f18e767] [cursor=pointer]
+          - tab "All visualizations" [ref=f18e769] [cursor=pointer]
+        - generic "Search for..." [ref=f18e771]:
+          - textbox "Search for..." [active] [ref=f18e780]
+        - generic [ref=f18e785]:
+          - paragraph [ref=f18e789]: Run a query to start seeing suggested visualizations
+          - generic [ref=f18e790]: OR
+          - generic [ref=f18e794]:
+            - paragraph [ref=f18e795]: Start without data
+            - paragraph [ref=f18e796]: Add panels that don't require a query
+          - button "Text Supports markdown and html content" [ref=f18e797] [cursor=pointer]:
+            - generic [ref=f18e798]:
+              - generic [ref=f18e799]: Text
+              - generic [ref=f18e800]: Supports markdown and html content
+          - button "Alert list Shows list of alerts and their current status" [ref=f18e801] [cursor=pointer]:
+            - generic [ref=f18e802]:
+              - generic [ref=f18e803]: Alert list
+              - generic [ref=f18e804]: Shows list of alerts and their current status
+          - button "Dashboard list List of dynamic links to other dashboards" [ref=f18e805] [cursor=pointer]:
+            - generic [ref=f18e806]:
+              - generic [ref=f18e807]: Dashboard list
+              - generic [ref=f18e808]: List of dynamic links to other dashboards
