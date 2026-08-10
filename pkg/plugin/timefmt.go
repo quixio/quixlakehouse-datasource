@@ -93,18 +93,28 @@ func (f TimeFormat) ToTime(v int64) time.Time {
 
 // EpochToTimestampExpr wraps an epoch column in the DuckDB call that turns it into
 // a TIMESTAMP, so time_bucket() can group on it.
+//
+// The epoch columns are cast to BIGINT first. DuckDB's epoch_ms, make_timestamp and
+// integer division are all declared over BIGINT, and a lakehouse epoch column is not
+// always stored as one -- can_signals.t_rel is a DOUBLE. Without the cast the query
+// fails at bind time with "No function matches the given name and argument types
+// 'epoch_ms(DOUBLE)'", which is a type error the user cannot fix from the editor.
+// Casting is safe for a genuine BIGINT and costs nothing.
+//
+// to_timestamp is the exception: it is declared over DOUBLE, so seconds with a
+// fractional part survive rather than being truncated.
 func (f TimeFormat) EpochToTimestampExpr(column string) string {
 	switch f.Normalize() {
 	case TimeFormatEpochSecs:
-		return "to_timestamp(" + column + ")"
+		return "to_timestamp(CAST(" + column + " AS DOUBLE))"
 	case TimeFormatEpochMicros:
-		return "make_timestamp(" + column + ")"
+		return "make_timestamp(CAST(" + column + " AS BIGINT))"
 	case TimeFormatEpochNanos:
-		return "make_timestamp(" + column + " // 1000)"
+		return "make_timestamp(CAST(" + column + " AS BIGINT) // 1000)"
 	case TimeFormatTimestamp:
 		return "CAST(" + column + " AS TIMESTAMP)"
 	default:
-		return "epoch_ms(" + column + ")"
+		return "epoch_ms(CAST(" + column + " AS BIGINT))"
 	}
 }
 

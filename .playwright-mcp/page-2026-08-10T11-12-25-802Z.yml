@@ -1,0 +1,4 @@
+- main [ref=e7]:
+  - log [ref=e8]
+  - status "Loading" [ref=e11]:
+    - img "Grafana" [ref=e13]

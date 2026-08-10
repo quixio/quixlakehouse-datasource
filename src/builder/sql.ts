@@ -87,6 +87,19 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
       groups.push(ident(col));
     }
   }
+  // Any column selected raw must also be grouped, or DuckDB rejects the query:
+  // "column must appear in the GROUP BY clause or be used in an aggregate function".
+  // Choosing aggregate "none" while bucketing by time produced exactly that.
+  // Grouping it is the honest reading of what was asked for; silently applying an
+  // aggregate would change the result without saying so.
+  if (bucketing) {
+    for (const s of state.select) {
+      const col = (s.column ?? '').trim();
+      if (col !== '' && s.aggregate === 'none') {
+        groups.push(ident(col));
+      }
+    }
+  }
   // An aggregate with no GROUP BY collapses everything to one row, which is almost
   // never what a panel wants; only group when there is a bucket or explicit column.
   const grouping = groups.length > 0 && (bucketing || hasAggregate(state));

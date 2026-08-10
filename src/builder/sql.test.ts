@@ -48,6 +48,13 @@ describe('buildSQL', () => {
     expect(sql).toContain("circuit = 'Monza'");
   });
 
+  // Selecting a raw column while bucketing produced "value" bare next to GROUP BY 1,
+  // which DuckDB rejects: the column must be grouped or aggregated.
+  it('groups a raw column when bucketing, rather than emitting invalid SQL', () => {
+    const sql = buildSQL(base({ select: [{ column: 'value', aggregate: 'none' }] }));
+    expect(sql).toContain('GROUP BY 1, value');
+  });
+
   it('groups by extra columns alongside the time bucket', () => {
     const sql = buildSQL(base({ groupByColumns: ['driver_acronym'] }));
     expect(sql).toContain('GROUP BY 1, driver_acronym');

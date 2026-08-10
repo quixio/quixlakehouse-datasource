@@ -27,6 +27,11 @@ const OPERATOR_OPTIONS: Array<SelectableValue<FilterOperator>> = ['=', '!=', '>'
   value: o as FilterOperator,
 }));
 
+// Mirrors timeColumnNameHints in pkg/plugin/timefmt.go, which the backend uses to
+// auto-detect a time column when the query does not name one. Keeping the two in step
+// means the column the editor suggests first is the one the backend would have picked.
+const TIME_NAME_HINTS = new Set(['time', 'timestamp', 'ts', 'ts_ms', 'datetime', 'date', 'event_time']);
+
 const ORDER_OPTIONS: Array<SelectableValue<string>> = [
   { label: 'ascending', value: 'asc' },
   { label: 'descending', value: 'desc' },
@@ -170,19 +175,39 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
     };
   }, [table, datasource]);
 
-  // Type shown alongside the name: picking a value column is guesswork otherwise, and
-  // it is the difference between a plottable series and a string column.
+  // Type is appended to the label rather than passed as `description`. A description
+  // renders on a second line, which turned a 17-column table into a menu tall enough
+  // to open upward over the panel and show only about five entries. One line each
+  // keeps the whole list scannable, and typing a type still filters.
   const columnOptions: Array<SelectableValue<string>> = columnsForTable.map((c) => ({
-    label: c.name,
+    label: `${c.name}  ·  ${c.type}`,
     value: c.name,
-    description: c.type,
   }));
 
   // A time column has to be an epoch integer or a real timestamp. Offering strings
   // here produces a panel that silently will not plot.
+  //
+  // Ordered, not just filtered, because type alone cannot identify a timestamp:
+  // can_signals.t_rel is a DOUBLE holding seconds *relative* to a segment, so using
+  // it as a time column yields a chart sitting at 1970-01-01. Conventionally named
+  // columns come first, then other integers, then floats -- which puts ts_ms above
+  // t_rel where it belongs. The list is filtered, not truncated, and custom values
+  // are still allowed, so an unconventionally named epoch column stays reachable.
   const timeColumnOptions = columnsForTable
     .filter((c) => /^(long|int|bigint|double|float|timestamp|date)/i.test(c.type))
-    .map((c) => ({ label: c.name, value: c.name, description: c.type }));
+    .map((c) => ({
+      label: `${c.name}  ·  ${c.type}`,
+      value: c.name,
+      rank: TIME_NAME_HINTS.has(c.name.toLowerCase())
+        ? 0
+        : /^(timestamp|date)/i.test(c.type)
+          ? 1
+          : /^(long|int|bigint)/i.test(c.type)
+            ? 2
+            : 3,
+    }))
+    .sort((a, b) => a.rank - b.rank)
+    .map(({ label, value }) => ({ label, value }));
 
   return (
     <Stack direction="column" gap={0.5}>
@@ -316,7 +341,14 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           label={builder.filters.length === 0 ? 'WHERE' : ''}
           labelWidth={LABEL_WIDTH}
           interactive
-          tooltip="Partition filters. Add at least one: an unpartitioned scan is the usual reason a query never returns."
+          // The partition list lives in the tooltip rather than beside the row: as a
+          // visible hint it overflowed the row and was clipped mid-word, and the same
+          // columns are already the contents of the dropdown "+" opens.
+          tooltip={
+            partitionColumns.length > 0
+              ? `Add at least one: an unpartitioned scan is the usual reason a query never returns. ${table} is partitioned by ${partitionColumns.join(', ')}.`
+              : 'Partition filters. Add at least one: an unpartitioned scan is the usual reason a query never returns.'
+          }
         >
           {/* Prefilled with the next unused partition column so the new row already
               names something real. An empty row would make the user guess. */}
@@ -328,11 +360,6 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
             }
           />
         </InlineField>
-        {!!table && partitionColumns.length > 0 && builder.filters.length === 0 && (
-          <InlineField label="" labelWidth={0}>
-            <span>{`partitioned by ${partitionColumns.join(', ')}`}</span>
-          </InlineField>
-        )}
       </InlineFieldRow>
 
       {/* GROUP BY */}
