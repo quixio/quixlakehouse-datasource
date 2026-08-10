@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.3 - unreleased
+
+- Relative time mode: switching it on anchors the run's last sample at the current
+  clock, so it shows in an ordinary "Last 6 hours" with no 1970 range to set up.
+  Zero at stays editable, with Detect (zero at the start) and End at now.
+- The origin is rescaled when the epoch unit changes; previously a millisecond origin
+  read as seconds landed ~56,000 years out and the panel went blank.
+- Builder dropdowns bind to option objects, fixing an interval change that never
+  reached the query.
+
 ## 0.0.2 - unreleased
 
 - Visual query builder with a Builder/Code toggle, modelled on Grafana's InfluxQL
