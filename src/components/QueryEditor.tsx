@@ -106,9 +106,57 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     onRunQuery();
   };
 
-  const onTimeModeChange = (selected: SelectableValue<TimeMode>) => {
-    onChange({ ...query, timeMode: selected.value ?? 'absolute' });
-    onRunQuery();
+  /**
+   * Switching to relative anchors the run at now straight away.
+   *
+   * Doing it on the switch rather than making the user find a button is the whole
+   * point: relative mode is otherwise useless on arrival, because the data has not
+   * moved yet and the dashboard range has not either, so the panel just empties.
+   * Anchoring the last sample on the current clock means an ordinary "Last 6 hours"
+   * shows the run immediately.
+   *
+   * Both fields are written in one update. Setting the mode and then the origin in a
+   * second onChange would race: the first write is still in flight while the async
+   * lookup resolves, and the later one clobbers it.
+   */
+  const onTimeModeChange = async (selected: SelectableValue<TimeMode>) => {
+    const next = selected.value ?? 'absolute';
+    if (next !== 'relative') {
+      onChange({ ...query, timeMode: next });
+      onRunQuery();
+      return;
+    }
+
+    const table = (builder.table ?? '').trim();
+    const timeExpr = (builder.timeColumn ?? '').trim();
+    if (!table || !timeExpr) {
+      // Code mode, or an unfinished builder: no way to find the run's extent without
+      // parsing SQL, so switch the mode and leave the origin to Detect or the field.
+      onChange({ ...query, timeMode: next });
+      onRunQuery();
+      return;
+    }
+
+    setDetecting(true);
+    try {
+      const params: Record<string, string> = { table, expr: timeExpr };
+      for (const f of builder.filters) {
+        if (f.key && f.value) {
+          params[f.key] = f.value;
+        }
+      }
+      const res = await datasource.getResource('time-origin', params);
+      const patch: Partial<QuixLakeQuery> = { timeMode: next };
+      if (typeof res?.max === 'number') {
+        patch.timeOrigin = res.max - nowInColumnUnits();
+      }
+      onChange({ ...query, ...patch });
+    } catch (_e) {
+      onChange({ ...query, timeMode: next });
+    } finally {
+      setDetecting(false);
+      onRunQuery();
+    }
   };
 
   const [detecting, setDetecting] = useState(false);
