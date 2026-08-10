@@ -113,27 +113,57 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const [detecting, setDetecting] = useState(false);
 
-  /**
-   * Sets the origin to the current clock time, for counting backwards from now
-   * (elapsed since now, i.e. negative) or anchoring a live recording.
-   *
-   * Converted into the time column's own units, because that is what the origin is
-   * subtracted from. Getting this wrong is not subtle -- an epoch-seconds column with
-   * a millisecond origin lands roughly 55,000 years out.
-   */
-  const setOriginToNow = () => {
+  /** The current clock in the time column's own units. */
+  const nowInColumnUnits = (): number => {
     const nowMs = Date.now();
     const fmt = query.timeFormat ?? 'epoch_ms';
-    const origin =
-      fmt === 'epoch_s'
-        ? Math.floor(nowMs / 1000)
-        : fmt === 'epoch_us'
-          ? nowMs * 1000
-          : fmt === 'epoch_ns'
-            ? nowMs * 1_000_000
-            : nowMs;
-    onChange({ ...query, timeOrigin: origin });
-    onRunQuery();
+    // Getting this wrong is not subtle: an epoch-seconds column given a millisecond
+    // origin lands roughly 55,000 years out.
+    switch (fmt) {
+      case 'epoch_s':
+        return Math.floor(nowMs / 1000);
+      case 'epoch_us':
+        return nowMs * 1000;
+      case 'epoch_ns':
+        return nowMs * 1_000_000;
+      default:
+        return nowMs;
+    }
+  };
+
+  /**
+   * Shifts the run so its LAST sample sits on the current clock.
+   *
+   * displayed = stored - origin, so origin = max - now puts max at now and the first
+   * sample at now - (max - min). The run then falls just behind the present and shows
+   * up in an ordinary "Last 6 hours" dashboard with no 1970 range to set up.
+   *
+   * Anchoring min instead would put the whole recording in the future, past the right
+   * edge of every now-relative range -- which is why this needs max, and why it asks
+   * the backend rather than using the clock alone.
+   */
+  const anchorRunAtNow = async () => {
+    const table = (builder.table ?? '').trim();
+    const timeExpr = (builder.timeColumn ?? '').trim();
+    if (!table || !timeExpr) {
+      return;
+    }
+    setDetecting(true);
+    try {
+      const params: Record<string, string> = { table, expr: timeExpr };
+      for (const f of builder.filters) {
+        if (f.key && f.value) {
+          params[f.key] = f.value;
+        }
+      }
+      const res = await datasource.getResource('time-origin', params);
+      if (typeof res?.max === 'number') {
+        onChange({ ...query, timeOrigin: res.max - nowInColumnUnits() });
+        onRunQuery();
+      }
+    } finally {
+      setDetecting(false);
+    }
   };
 
   /**
@@ -263,12 +293,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       </InlineField>
 
       {(query.timeMode ?? 'absolute') === 'relative' && (
-        <Alert severity="info" title="Relative mode moves the data to 1970">
-          Subtracting the origin is what makes the run start at zero, and zero is the Unix epoch — Grafana has no
-          duration axis. So the dashboard range has to move too: set the timezone to <strong>UTC</strong> and an
-          absolute range starting at <strong>1970-01-01 00:00:00</strong>, long enough to cover the run. Until you do,
-          the panel is empty because the data now sits outside the visible window. Do not put an alert rule on a
-          relative panel.
+        <Alert severity="info" title="Relative mode shifts the data, so the dashboard range must match">
+          Two anchors, and they need different ranges. <strong>Detect</strong> puts zero at the start of the run, and
+          zero is the Unix epoch — so set the timezone to <strong>UTC</strong> and an absolute range from{' '}
+          <strong>1970-01-01 00:00:00</strong>. <strong>End at now</strong> instead lands the last sample on the
+          current clock, so an ordinary <strong>Last 6 hours</strong> works with no setup. Until the range matches the
+          anchor the panel is empty, because the data has moved outside the visible window. Either way, do not put an
+          alert rule on a relative panel — the timestamps are fabricated.
         </Alert>
       )}
 
@@ -277,7 +308,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           label="Zero at"
           labelWidth={LABEL_WIDTH}
           interactive
-          tooltip="The instant that becomes zero, in the time column's own units. Detect fills it from min() over the table, ignoring the dashboard range -- an origin that moved with the filter would make the window always restart at zero and zoom look broken."
+          tooltip="The instant that becomes zero, in the time column's own units. Detect anchors zero at the start of the run, which needs a dashboard range beginning at 1970-01-01. End at now shifts the run so its last sample is the current time instead, so it shows in an ordinary Last 6 hours range. Both ignore the dashboard range when reading the data -- an origin that moved with the filter would make the window always restart at zero and zoom look broken."
         >
           <Stack direction="row" gap={0.5} alignItems="center">
             <Input
@@ -294,8 +325,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             <Button variant="secondary" size="sm" disabled={detecting} onClick={detectOrigin}>
               {detecting ? 'Detecting…' : 'Detect'}
             </Button>
-            <Button variant="secondary" size="sm" onClick={setOriginToNow} title="Set zero to the current clock time">
-              Now
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={detecting}
+              onClick={anchorRunAtNow}
+              title="Shift the run so its last sample is now, making it visible in a Last 6 hours dashboard"
+            >
+              End at now
             </Button>
           </Stack>
         </InlineField>
