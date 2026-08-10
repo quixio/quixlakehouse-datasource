@@ -30,13 +30,34 @@ export interface QuixLakeQuery extends DataQuery {
    */
   timeMode?: TimeMode;
   /**
-   * The instant that becomes zero, in the time column's units.
+   * Offset the backend subtracts from the stored value, in the time column's units.
    *
-   * Stored in the panel rather than derived per request on purpose: an origin
-   * recomputed from the filtered rows moves on every zoom, so the window would always
+   * DERIVED, not authored: the editor computes it from timeZeroAt and timeRunStart.
+   * It is signed and its sign depends on which anchor produced it, which makes it a
+   * poor thing to put in front of a user -- hence the two fields below.
+   *
+   * Stored in the panel rather than recomputed per request on purpose: an offset
+   * derived from the filtered rows moves on every zoom, so the window would always
    * restart at zero and dragging would appear to do nothing.
    */
   timeOrigin?: number;
+  /**
+   * Wall-clock instant, epoch milliseconds, where the START of the run is placed.
+   *
+   * This is what the user sees and edits. Always a positive unix time: 0 means the
+   * run starts at 1970-01-01 (a pure elapsed axis), and `now - duration` means it ends
+   * at the present. Expressing it this way avoids the signed offset, which is negative
+   * for one anchor and positive for the other and explains nothing at a glance.
+   */
+  timeZeroAt?: number;
+  /**
+   * min() of the time column, in the column's units, from the last lookup.
+   *
+   * Needed to turn timeZeroAt into timeOrigin: the data has to be normalised to
+   * zero-based before it can be placed anywhere. Kept in the panel so a saved
+   * dashboard does not have to re-query on load.
+   */
+  timeRunStart?: number;
   /** Which editor is showing. The backend never reads this. */
   editorMode?: EditorMode;
   /** Builder state. Kept alongside rawSql, not instead of it -- see below. */

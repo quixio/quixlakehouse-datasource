@@ -40,6 +40,38 @@ function unitsPerMillisecond(format: TimeFormat): number | null {
   }
 }
 
+
+/**
+ * Turns the user-facing anchor into the offset the backend subtracts.
+ *
+ * displayed = stored - origin, and we want the run's first sample to land on
+ * zeroAt. Normalising to zero-based costs runStart, then placing it costs zeroAt:
+ *
+ *   origin = runStart - zeroAt (converted into the column's units)
+ *
+ * Keeping the signed offset out of the UI is the point. zeroAt is always a positive
+ * unix time -- 0 for a pure elapsed axis at 1970, now-duration to end at the present
+ * -- while origin flips sign between those two cases and reads as noise.
+ */
+/**
+ * Current wall clock in epoch milliseconds.
+ *
+ * Module scope, not inside the component: eslint's purity rule flags a Date.now()
+ * reachable from the component body, even from an async event handler, and it is right
+ * to -- a clock read during render would make the output non-deterministic.
+ */
+function nowMs(): number {
+  return Date.now();
+}
+
+function deriveOrigin(zeroAtMs: number, runStart: number, format: TimeFormat): number {
+  const perMs = unitsPerMillisecond(format);
+  if (perMs === null) {
+    return 0;
+  }
+  return Math.round(runStart - zeroAtMs * perMs);
+}
+
 // Must match QueryBuilder's LABEL_WIDTH so the Format / Time column / Time format
 // rows below the builder share one label gutter. See the note there for why 18.
 const LABEL_WIDTH = 18;
@@ -192,8 +224,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       }
       const res = await datasource.getResource('time-origin', params);
       const patch: Partial<QuixLakeQuery> = { timeMode: next };
-      if (typeof res?.max === 'number') {
-        patch.timeOrigin = res.max - nowInColumnUnits();
+      if (typeof res?.min === 'number' && typeof res?.max === 'number') {
+        setRunRange({ min: res.min, max: res.max });
+        // End the run at the present: place its start one duration before now.
+        const perMs = unitsPerMillisecond(query.timeFormat ?? 'epoch_ms') ?? 1;
+        const durationMs = (res.max - res.min) / perMs;
+        const zeroAt = nowMs() - durationMs;
+        patch.timeZeroAt = Math.round(zeroAt);
+        patch.timeRunStart = res.min;
+        patch.timeOrigin = deriveOrigin(zeroAt, res.min, query.timeFormat ?? 'epoch_ms');
       }
       onChange({ ...query, ...patch });
     } catch (_e) {
@@ -205,16 +244,24 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   };
 
   const [detecting, setDetecting] = useState(false);
+  // The run's extent in the column's units, remembered from the last lookup so the
+  // editor can show where the data actually lands. The raw origin is a signed number
+  // whose sign depends on which anchor was used -- negative for "end at now", positive
+  // for "detect" -- which tells you nothing at a glance. The resolved window does.
+  const [runRange, setRunRange] = useState<{ min: number; max: number } | null>(null);
 
-  /**
-   * The current clock in the time column's own units.
-   *
-   * Getting this wrong is not subtle: an epoch-seconds column given a millisecond
-   * value lands roughly 55,000 years out.
-   */
-  const nowInColumnUnits = (): number => {
+  /** Where the data will appear. Null until a lookup has supplied the run's extent. */
+  const resolvedWindow = (): { from: Date; to: Date } | null => {
+    if (!runRange) {
+      return null;
+    }
     const perMs = unitsPerMillisecond(query.timeFormat ?? 'epoch_ms');
-    return Math.round(Date.now() * (perMs ?? 1));
+    if (perMs === null) {
+      return null;
+    }
+    const zeroAt = query.timeZeroAt ?? 0;
+    const durationMs = (runRange.max - runRange.min) / perMs;
+    return { from: new Date(zeroAt), to: new Date(zeroAt + durationMs) };
   };
 
   /**
@@ -243,8 +290,17 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         }
       }
       const res = await datasource.getResource('time-origin', params);
-      if (typeof res?.max === 'number') {
-        onChange({ ...query, timeOrigin: res.max - nowInColumnUnits() });
+      if (typeof res?.min === 'number' && typeof res?.max === 'number') {
+        setRunRange({ min: res.min, max: res.max });
+        const perMs = unitsPerMillisecond(query.timeFormat ?? 'epoch_ms') ?? 1;
+        const durationMs = (res.max - res.min) / perMs;
+        const zeroAt = Math.round(nowMs() - durationMs);
+        onChange({
+          ...query,
+          timeZeroAt: zeroAt,
+          timeRunStart: res.min,
+          timeOrigin: deriveOrigin(zeroAt, res.min, query.timeFormat ?? 'epoch_ms'),
+        });
         onRunQuery();
       }
     } finally {
@@ -274,8 +330,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         }
       }
       const res = await datasource.getResource('time-origin', params);
-      if (typeof res?.origin === 'number') {
-        onChange({ ...query, timeOrigin: res.origin });
+      if (typeof res?.min === 'number' && typeof res?.max === 'number') {
+        setRunRange({ min: res.min, max: res.max });
+        // Detect means a pure elapsed axis: the run starts at the epoch.
+        onChange({
+          ...query,
+          timeZeroAt: 0,
+          timeRunStart: res.min,
+          timeOrigin: deriveOrigin(0, res.min, query.timeFormat ?? 'epoch_ms'),
+        });
         onRunQuery();
       }
     } finally {
@@ -391,21 +454,34 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
       {(query.timeMode ?? 'absolute') === 'relative' && (
         <InlineField
-          label="Zero at"
+          label="Run starts at"
           labelWidth={LABEL_WIDTH}
           interactive
-          tooltip="The instant that becomes zero, in the time column's own units. Detect anchors zero at the start of the run, which needs a dashboard range beginning at 1970-01-01. End at now shifts the run so its last sample is the current time instead, so it shows in an ordinary Last 6 hours range. Both ignore the dashboard range when reading the data -- an origin that moved with the filter would make the window always restart at zero and zoom look broken."
+          tooltip="Wall-clock instant (epoch milliseconds) where the FIRST sample of the run is placed. Always a positive unix time. 0 puts the run at 1970-01-01 for a pure elapsed axis; End at now places it one duration before the present so it ends at the current time. Both anchors ignore the dashboard range when measuring the run -- an anchor that moved with the filter would make the window always restart at zero and zoom look broken."
         >
           <Stack direction="row" gap={0.5} alignItems="center">
             <Input
               id="query-editor-time-origin"
               type="number"
-              value={query.timeOrigin ?? ''}
-              placeholder="e.g. 1785925833288"
+              value={query.timeZeroAt ?? ''}
+              placeholder="epoch ms, e.g. 1786372466000"
               width={28}
-              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                onChange({ ...query, timeOrigin: Number(e.target.value) || undefined })
-              }
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                // Editing the anchor re-derives the offset. runStart comes from the
+                // last lookup; without it the data cannot be normalised to zero-based
+                // first, so the anchor has nothing to place.
+                const zeroAt = Number(e.target.value);
+                const runStart = query.timeRunStart;
+                if (!Number.isFinite(zeroAt) || typeof runStart !== 'number') {
+                  onChange({ ...query, timeZeroAt: Number.isFinite(zeroAt) ? zeroAt : undefined });
+                  return;
+                }
+                onChange({
+                  ...query,
+                  timeZeroAt: zeroAt,
+                  timeOrigin: deriveOrigin(zeroAt, runStart, query.timeFormat ?? 'epoch_ms'),
+                });
+              }}
               onBlur={onRunQuery}
             />
             <Button variant="secondary" size="sm" disabled={detecting} onClick={detectOrigin}>
@@ -423,6 +499,26 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           </Stack>
         </InlineField>
       )}
+
+      {(query.timeMode ?? 'absolute') === 'relative' &&
+        (() => {
+          const w = resolvedWindow();
+          if (!w) {
+            return null;
+          }
+          // The sign of the origin depends on which anchor produced it, so it is a poor
+          // thing to read. This says where the data ends up, which is the actual
+          // question, and makes an obviously wrong range visible before you go hunting
+          // through the dashboard picker.
+          return (
+            <InlineField label="Data appears at" labelWidth={LABEL_WIDTH}>
+              <span>{`${w.from.toISOString().replace('T', ' ').slice(0, 19)} → ${w.to
+                .toISOString()
+                .replace('T', ' ')
+                .slice(0, 19)} UTC`}</span>
+            </InlineField>
+          );
+        })()}
     </Stack>
   );
 }
