@@ -2,35 +2,19 @@
 
 How to get the plugin into a Grafana you already run.
 
-## Can I install it from inside Grafana?
-
-**Not yet.** Grafana's plugin page (Administration → Plugins, or Connections → Add new
-connection) lists only plugins published in **grafana.com's catalog**. There is no
-"upload a zip" button in the Grafana UI, and there never has been — the catalog is the
-only in-app install source.
-
-So today, installing means putting files on disk where Grafana can find them, by one of
-the three routes below, each of which needs a Grafana restart.
-
-Once this plugin is published and signed, it appears in that in-app list and installs
-with a click, no restart of your own required. Everything below becomes unnecessary.
-Tracking: [sc-74412](https://app.shortcut.com/quix/story/74412).
+Catalog publication comes later; until then, install by one of the routes below.
 
 ## Before you start
 
-**Grafana 12.3 or newer** (`grafanaDependency: ">=12.3.0"` in `plugin.json`).
+**Grafana 12.3 or newer.** Self-hosted — signing comes later.
 
-**The plugin is unsigned**, so Grafana refuses to load it unless you allow it by id:
+**Allow the unsigned plugin**, or Grafana will not load it:
 
 ```
 GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=quix-quixlakehouse-datasource
 ```
 
-Unsigned plugins load on self-hosted Grafana. They **cannot** load on Grafana Cloud at
-all — Cloud requires a signature, which is a separate piece of work.
-
-You also need the plugin id itself, which is used as a directory name, an env var value
-and the datasource `type`:
+The plugin id is also the directory name and the datasource `type`:
 
 ```
 quix-quixlakehouse-datasource
