@@ -68,12 +68,16 @@ var internalColumns = map[string]bool{
 // Deliberately NOT filtered by the dashboard time range. An origin recomputed from
 // whatever the current zoom left would move on every zoom, so the visible window
 // would always restart at zero and dragging would appear to do nothing.
-func (c *RESTClient) MinTime(ctx context.Context, table, timeExpr string, filters map[string]string) (int64, error) {
+func (c *RESTClient) MinTime(ctx context.Context, table, timeExpr string, filters map[string]string) (int64, int64, error) {
 	if strings.TrimSpace(table) == "" || strings.TrimSpace(timeExpr) == "" {
-		return 0, fmt.Errorf("table and expr are required")
+		return 0, 0, fmt.Errorf("table and expr are required")
 	}
 
-	sql := "SELECT min(" + timeExpr + ") AS origin FROM " + table
+	// Both ends in one query. min anchors "zero at the start"; max is what lets the
+	// run be shifted onto the current clock, which needs the LAST sample to land on
+	// now -- anchoring the first would put the whole run in the future, outside any
+	// "last N hours" range.
+	sql := "SELECT min(" + timeExpr + ") AS lo, max(" + timeExpr + ") AS hi FROM " + table
 	keys := make([]string, 0, len(filters))
 	for k := range filters {
 		keys = append(keys, k)
@@ -91,22 +95,31 @@ func (c *RESTClient) MinTime(ctx context.Context, table, timeExpr string, filter
 		sql += clause + k + " = '" + strings.ReplaceAll(v, "'", "''") + "'"
 	}
 
-	resp, err := c.Query(ctx, sql, false /* CSV: one scalar, and CSV can report a mid-stream error */)
+	resp, err := c.Query(ctx, sql, false /* CSV: two scalars, and CSV can report a mid-stream error */)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	// header line, then the value
+	// header line, then "lo,hi"
 	lines := strings.Split(strings.TrimSpace(string(resp.Body)), "\n")
 	if len(lines) < 2 {
-		return 0, fmt.Errorf("no rows returned for the origin query")
+		return 0, 0, fmt.Errorf("no rows returned for the time-range query")
 	}
-	raw := strings.TrimSpace(lines[1])
-	f, err := strconv.ParseFloat(raw, 64)
+	cols := strings.Split(strings.TrimSpace(lines[1]), ",")
+	if len(cols) < 2 {
+		return 0, 0, fmt.Errorf("expected two values, got %q", lines[1])
+	}
+	// Parsed as float because the expression can be one: can_signals.t_rel is a
+	// DOUBLE, so min() over it returns "0.0", which ParseInt would reject.
+	lo, err := strconv.ParseFloat(strings.TrimSpace(cols[0]), 64)
 	if err != nil {
-		return 0, fmt.Errorf("could not parse the origin %q: %w", raw, err)
+		return 0, 0, fmt.Errorf("could not parse the range start %q: %w", cols[0], err)
 	}
-	return int64(f), nil
+	hi, err := strconv.ParseFloat(strings.TrimSpace(cols[1]), 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("could not parse the range end %q: %w", cols[1], err)
+	}
+	return int64(lo), int64(hi), nil
 }
 
 // Schema lists a table's columns, for the builder's SELECT and TIME COLUMN dropdowns.

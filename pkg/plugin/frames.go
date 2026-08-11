@@ -159,16 +159,34 @@ func builderFor(field arrow.Field, asTime bool, format TimeFormat, origin int64,
 		}), nil
 	case arrow.TIMESTAMP:
 		unit := field.Type.(*arrow.TimestampType).Unit
+		// Shifted as a duration, not an integer: $__timeGroup wraps the column in
+		// time_bucket(), which hands back a TIMESTAMP, so by the time it reaches here
+		// there is no epoch value left to subtract from. Skipping this is why relative
+		// mode looked broken as soon as GROUP BY time was enabled -- the numeric paths
+		// rebased and this one silently did not. Only the promoted time column is
+		// shifted; an ordinary timestamp column keeps its real value.
+		shift := time.Duration(0)
+		if asTime {
+			shift = format.OriginDuration(origin)
+		}
 		return newColBuilder(nullable, capacity, func(a arrow.Array, i int) time.Time {
-			return a.(*array.Timestamp).Value(i).ToTime(unit).UTC()
+			return a.(*array.Timestamp).Value(i).ToTime(unit).UTC().Add(-shift)
 		}), nil
 	case arrow.DATE32:
+		dateShift := time.Duration(0)
+		if asTime {
+			dateShift = format.OriginDuration(origin)
+		}
 		return newColBuilder(nullable, capacity, func(a arrow.Array, i int) time.Time {
-			return a.(*array.Date32).Value(i).ToTime().UTC()
+			return a.(*array.Date32).Value(i).ToTime().UTC().Add(-dateShift)
 		}), nil
 	case arrow.DATE64:
+		date64Shift := time.Duration(0)
+		if asTime {
+			date64Shift = format.OriginDuration(origin)
+		}
 		return newColBuilder(nullable, capacity, func(a arrow.Array, i int) time.Time {
-			return a.(*array.Date64).Value(i).ToTime().UTC()
+			return a.(*array.Date64).Value(i).ToTime().UTC().Add(-date64Shift)
 		}), nil
 	default:
 		// Decimals, intervals, lists, structs, binary. Rendering them as text keeps

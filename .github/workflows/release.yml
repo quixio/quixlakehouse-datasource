@@ -95,8 +95,10 @@ jobs:
           # -r keeps the directory entry; zip preserves the exec bit on Linux.
           ( cd pkg-root && zip -qr "../${OUT}" "${PLUGIN_ID}" )
 
-          # Grafana's catalog submission asks for the sha1 of the zip.
-          sha1sum "${OUT}" | cut -d' ' -f1 > "${OUT}.sha1"
+          # Standard two-column format, so `sha1sum -c` can verify it. Writing the
+          # bare hash produced a file no tool would read -- the catalog submission
+          # wants the value pasted in, which is still the first field here.
+          sha1sum "${OUT}" > "${OUT}.sha1"
 
           echo "zip=${OUT}" >> "$GITHUB_OUTPUT"
           echo "### Packaged" >> "$GITHUB_STEP_SUMMARY"

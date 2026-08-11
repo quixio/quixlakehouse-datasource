@@ -167,13 +167,14 @@ func (d *Datasource) handleTimeOrigin(ctx context.Context, req *backend.CallReso
 		}
 	}
 
-	origin, err := d.client.MinTime(ctx, table, timeExpr, filters)
+	lo, hi, err := d.client.MinTime(ctx, table, timeExpr, filters)
 	if err != nil {
 		msg, _ := classifyError(err, d.baseURL)
 		log.DefaultLogger.Warn("time-origin lookup failed", "table", table, "expr", timeExpr, "err", err)
 		return sendJSON(sender, http.StatusBadGateway, map[string]string{"error": msg})
 	}
-	return sendJSON(sender, http.StatusOK, map[string]any{"origin": origin})
+	// origin stays for compatibility with callers that only want the start.
+	return sendJSON(sender, http.StatusOK, map[string]any{"origin": lo, "min": lo, "max": hi})
 }
 
 // handleSchema lists a table's columns with their types, for the SELECT and

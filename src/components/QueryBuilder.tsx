@@ -32,6 +32,11 @@ const OPERATOR_OPTIONS: Array<SelectableValue<FilterOperator>> = ['=', '!=', '>'
 // means the column the editor suggests first is the one the backend would have picked.
 const TIME_NAME_HINTS = new Set(['time', 'timestamp', 'ts', 'ts_ms', 'datetime', 'date', 'event_time']);
 
+const GROUP_BY_OPTIONS: Array<SelectableValue<string>> = [
+  { label: 'time', value: 'time' },
+  { label: 'none', value: 'none' },
+];
+
 const ORDER_OPTIONS: Array<SelectableValue<string>> = [
   { label: 'ascending', value: 'asc' },
   { label: 'descending', value: 'desc' },
@@ -278,7 +283,7 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           <InlineField>
             <Select
               options={AGGREGATE_OPTIONS}
-              value={sel.aggregate}
+              value={AGGREGATE_OPTIONS.find((o) => o.value === sel.aggregate)}
               width={20}
               onChange={(v) => {
                 const next = [...builder.select];
@@ -316,6 +321,8 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
         <FilterRow
           key={`f-${i}`}
           index={i}
+          isLast={i === builder.filters.length - 1}
+          onAdd={() => set({ filters: [...builder.filters, { key: nextUnusedColumn(), operator: '=', value: '' }] })}
           filter={f}
           table={table}
           partitionColumns={partitionColumns}
@@ -332,35 +339,31 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           onRunQuery={onRunQuery}
         />
       ))}
-      {/* The add-filter affordance is an IconButton chip, matching SELECT's + chip so
-          all add/remove actions in the form use the same visual weight. The InlineField
-          label ("WHERE" when no filters exist, empty otherwise) provides the label that
-          a standalone Button would have had as its text. */}
-      <InlineFieldRow>
-        <InlineField
-          label={builder.filters.length === 0 ? 'WHERE' : ''}
-          labelWidth={LABEL_WIDTH}
-          interactive
-          // The partition list lives in the tooltip rather than beside the row: as a
-          // visible hint it overflowed the row and was clipped mid-word, and the same
-          // columns are already the contents of the dropdown "+" opens.
-          tooltip={
-            partitionColumns.length > 0
-              ? `Add at least one: an unpartitioned scan is the usual reason a query never returns. ${table} is partitioned by ${partitionColumns.join(', ')}.`
-              : 'Partition filters. Add at least one: an unpartitioned scan is the usual reason a query never returns.'
-          }
-        >
-          {/* Prefilled with the next unused partition column so the new row already
-              names something real. An empty row would make the user guess. */}
-          <IconButton
-            name="plus"
-            aria-label="add filter"
-            onClick={() =>
-              set({ filters: [...builder.filters, { key: nextUnusedColumn(), operator: '=', value: '' }] })
+      {/* Only shown when there are no filters yet. Once one exists the + lives on the
+          last row, which avoids a second row whose only content is an empty 144px
+          label box and an orphaned tooltip icon. */}
+      {builder.filters.length === 0 && (
+        <InlineFieldRow>
+          <InlineField
+            label="WHERE"
+            labelWidth={LABEL_WIDTH}
+            interactive
+            tooltip={
+              partitionColumns.length > 0
+                ? `Add at least one: an unpartitioned scan is the usual reason a query never returns. ${table} is partitioned by ${partitionColumns.join(', ')}.`
+                : 'Partition filters. Add at least one: an unpartitioned scan is the usual reason a query never returns.'
             }
-          />
-        </InlineField>
-      </InlineFieldRow>
+          >
+            <IconButton
+              name="plus"
+              aria-label="add filter"
+              onClick={() =>
+                set({ filters: [...builder.filters, { key: nextUnusedColumn(), operator: '=', value: '' }] })
+              }
+            />
+          </InlineField>
+        </InlineFieldRow>
+      )}
 
       {/* GROUP BY */}
       <InlineFieldRow>
@@ -371,11 +374,8 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           tooltip="Bucket by time. $__interval follows the dashboard zoom, so the row count stays flat as you widen the range."
         >
           <Select
-            options={[
-              { label: 'time', value: 'time' },
-              { label: 'none', value: 'none' },
-            ]}
-            value={builder.groupByTime ? 'time' : 'none'}
+            options={GROUP_BY_OPTIONS}
+            value={GROUP_BY_OPTIONS.find((o) => o.value === (builder.groupByTime ? 'time' : 'none'))}
             width={16}
             onChange={(v) => {
               set({ groupByTime: v.value === 'time' });
@@ -387,11 +387,21 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           <InlineField>
             <Select
               options={INTERVAL_OPTIONS}
-              value={builder.interval}
+              // A SelectableValue, not a bare string. With allowCustomValue set, a
+              // raw value that does not match an option is treated as "nothing
+              // selected", so the control showed a stale label and the change never
+              // reached builder.interval -- the same defect ORDER BY had with a
+              // boolean value.
+              value={
+                INTERVAL_OPTIONS.find((o) => o.value === builder.interval) ?? {
+                  label: builder.interval,
+                  value: builder.interval,
+                }
+              }
               width={28}
               allowCustomValue
               onChange={(v) => {
-                set({ interval: v.value ?? '$__interval' });
+                set({ interval: v?.value ?? '$__interval' });
                 onRunQuery();
               }}
             />
@@ -477,6 +487,9 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
 
 interface FilterRowProps {
   index: number;
+  /** The last row carries the + chip, so there is no separate add row to label. */
+  isLast: boolean;
+  onAdd: () => void;
   filter: { key: string; operator: FilterOperator; value: string };
   table: string;
   /** Preloaded by the parent when the table changes, so this row opens ready. */
@@ -497,6 +510,8 @@ interface FilterRowProps {
  */
 function FilterRow({
   index,
+  isLast,
+  onAdd,
   filter,
   table,
   partitionColumns,
@@ -549,7 +564,7 @@ function FilterRow({
       <InlineField>
         <Select
           options={OPERATOR_OPTIONS}
-          value={filter.operator}
+          value={OPERATOR_OPTIONS.find((o) => o.value === filter.operator)}
           width={10}
           onChange={(v) => {
             onChange({ ...filter, operator: v.value ?? '=' });
