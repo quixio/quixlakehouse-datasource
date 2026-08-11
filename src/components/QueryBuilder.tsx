@@ -3,6 +3,7 @@ import { Alert, IconButton, InlineField, InlineFieldRow, Input, Select, Stack, T
 import React, { ChangeEvent, useCallback, useEffect, useState } from 'react';
 
 import { DataSource } from '../datasource';
+import { partitionValuesParams } from '../builder/filters';
 import { AggregateFn, BuilderState, FilterOperator, QueryFormat } from '../types';
 
 // 18 × 8 px = 144 px, of which 128 px is content (the label has 8 px padding each
@@ -326,6 +327,7 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           filter={f}
           table={table}
           partitionColumns={partitionColumns}
+          otherFilters={builder.filters.filter((_, j) => j !== i)}
           datasource={datasource}
           onChange={(next) => {
             const copy = [...builder.filters];
@@ -497,6 +499,14 @@ interface FilterRowProps {
   table: string;
   /** Preloaded by the parent when the table changes, so this row opens ready. */
   partitionColumns: string[];
+  /**
+   * Every other filter on the panel, so this row's values can be narrowed by them.
+   *
+   * Without this a second filter offers every value of its column, including ones that
+   * cannot co-exist with the first — pick one and the query returns nothing, with no
+   * indication why.
+   */
+  otherFilters: Array<{ key: string; operator: FilterOperator; value: string }>;
   datasource: DataSource;
   onChange: (next: { key: string; operator: FilterOperator; value: string }) => void;
   onRemove: () => void;
@@ -518,6 +528,7 @@ function FilterRow({
   filter,
   table,
   partitionColumns,
+  otherFilters,
   datasource,
   onChange,
   onRemove,
@@ -533,7 +544,10 @@ function FilterRow({
     }
     setLoading(true);
     try {
-      const res = await datasource.getResource('partition-values', { table, column: filter.key });
+      // Extracted to keep the ancestor rules testable without driving a react-select
+      // in jsdom, where the placeholder is a div and interaction is fragile.
+      const params = partitionValuesParams(table, filter.key, otherFilters, partitionColumns);
+      const res = await datasource.getResource('partition-values', params);
       setOptions((res?.values ?? []).map((v: string) => ({ label: v, value: v })));
     } catch (_e) {
       // A column that is not a partition has no manifest entry. Leaving the list
