@@ -451,12 +451,15 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
           label="LIMIT"
           labelWidth={LABEL_WIDTH}
           interactive
-          tooltip="Always set. It is the backstop when every other bound has been edited away."
+          tooltip="Row cap. Leave empty for no limit. Note that nothing else bounds the result: maxDataPoints is not pushed down, so an unbounded query on a large table can be cut off by the ingress rather than returning an error."
         >
+          {/* Placeholder reads "no limit", not a number. A greyed-out "1000" looked like
+              a value that was already applied, when in fact an empty field emits no
+              LIMIT clause at all. */}
           <Input
             type="number"
             value={builder.limit ?? ''}
-            placeholder="1000"
+            placeholder="no limit"
             width={16}
             onChange={(e: ChangeEvent<HTMLInputElement>) => set({ limit: Number(e.target.value) || undefined })}
             onBlur={onRunQuery}

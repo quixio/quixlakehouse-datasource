@@ -157,10 +157,12 @@ export const DEFAULT_QUERY: Partial<QuixLakeQuery> = {
   // it, and seeding a template would both fight the builder and make the editor
   // open in Code mode, since a non-empty rawSql is what selects that view.
   //
-  // The "safe default" still holds -- it just lives in DEFAULT_BUILDER now, which
-  // starts with time bucketing on at $__interval and LIMIT 1000, so the first query
-  // anyone generates is bounded and scales with zoom. DEFAULT_SQL remains the
-  // placeholder shown in Code mode.
+  // DEFAULT_BUILDER starts with time bucketing on at $__interval, so a generated query
+  // scales with zoom. It no longer carries a row cap: a default LIMIT truncated
+  // silently, which is worse than no limit (sc-74547). Nothing else bounds the result
+  // either, since maxDataPoints is not pushed down -- tracked as a follow-up on that
+  // story. DEFAULT_SQL remains the placeholder shown in Code mode, and does include a
+  // LIMIT, because an example query is the right place to demonstrate capping one.
   editorMode: 'builder',
   builder: DEFAULT_BUILDER,
   rawSql: '',
