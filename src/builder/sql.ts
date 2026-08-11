@@ -38,6 +38,29 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
     selects.push(`${expr(timeColumn)} AS time`);
   }
 
+  // Split-by columns are dimensions, and a dimension has to be a FIELD in the frame,
+  // not merely a grouping key. Grouping without selecting is valid SQL, so nothing
+  // failed -- but the frame came back with only time and value, several rows sharing
+  // each timestamp and nothing to tell them apart. Grafana cannot split that into
+  // series, so it drew one line zig-zagging between the groups, with no per-series
+  // legend or colour (sc-74547).
+  //
+  // Emitted before the value columns so the frame reads time, dimension, value, which
+  // is the shape Grafana expects when deriving series names.
+  const splitColumns: string[] = [];
+  for (const g of state.groupByColumns) {
+    const col = (g ?? '').trim();
+    if (col === '') {
+      continue;
+    }
+    // Skip anything already chosen as a select field, or it would appear twice.
+    const alreadySelected = state.select.some((s) => (s.column ?? '').trim() === col);
+    if (!alreadySelected) {
+      splitColumns.push(col);
+      selects.push(expr(col));
+    }
+  }
+
   let valueColumns = 0;
   for (const s of state.select) {
     const col = (s.column ?? '').trim();

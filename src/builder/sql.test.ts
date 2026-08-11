@@ -17,11 +17,26 @@ describe('buildSQL', () => {
     expect(sql).toContain('ORDER BY 1');
   });
 
-  // The two properties that separate a working query from one the ingress kills.
-  it('always bounds the scan and always caps the rows', () => {
-    const sql = buildSQL(base());
-    expect(sql).toContain('$__timeFilter(ts_ms)');
-    expect(sql).toMatch(/LIMIT \d+/);
+  it('always bounds the scan by the dashboard range', () => {
+    expect(buildSQL(base())).toContain('$__timeFilter(ts_ms)');
+  });
+
+  it('emits LIMIT when one is set', () => {
+    expect(buildSQL(base({ limit: 500 }))).toContain('LIMIT 500');
+  });
+
+  // sc-74547. A default LIMIT truncates silently: a 60-second recording looked one
+  // second long during testing because 1000 rows was the whole panel and nothing said
+  // so. An unset limit must mean unlimited, not a hidden cap.
+  it.each([
+    ['undefined', undefined],
+    ['zero', 0],
+  ])('emits no LIMIT when the limit is %s', (_label, limit) => {
+    expect(buildSQL(base({ limit: limit as number | undefined }))).not.toContain('LIMIT');
+  });
+
+  it('defaults to no limit', () => {
+    expect(DEFAULT_BUILDER.limit).toBeUndefined();
   });
 
   it('aliases an aggregate to the bare column, so legends read "speed"', () => {
@@ -58,6 +73,52 @@ describe('buildSQL', () => {
   it('groups by extra columns alongside the time bucket', () => {
     const sql = buildSQL(base({ groupByColumns: ['driver_acronym'] }));
     expect(sql).toContain('GROUP BY 1, driver_acronym');
+  });
+
+  // sc-74547. Grouping a column without selecting it is valid SQL, so nothing failed --
+  // but the frame came back with only time and value, several rows sharing each
+  // timestamp and nothing to tell them apart. Grafana cannot split that into series,
+  // so it drew one line zig-zagging between the groups, with no per-series legend or
+  // colour. The assertion above passed throughout, which is how this got shipped.
+  it('SELECTS the split column too, so the frame has something to split series on', () => {
+    const sql = buildSQL(base({ groupByColumns: ['signal'] }));
+    expect(sql).toContain('GROUP BY 1, signal');
+    // The dimension has to be a field in the frame, not just a grouping key.
+    expect(sql).toMatch(/SELECT[\s\S]*\bsignal\b[\s\S]*FROM/);
+  });
+
+  it('puts the split column before the value columns, so the frame reads time, dimension, value', () => {
+    const sql = buildSQL(base({ groupByColumns: ['signal'] }));
+    const select = sql.slice(sql.indexOf('SELECT'), sql.indexOf('FROM'));
+    // Assert both are present first: indexOf returns -1 when absent, which would make
+    // the ordering check pass on SQL that omits the column entirely.
+    expect(select).toContain('signal');
+    expect(select).toContain('avg(speed)');
+    expect(select.indexOf('signal')).toBeLessThan(select.indexOf('avg(speed)'));
+  });
+
+  it('selects every split column when several are given', () => {
+    const sql = buildSQL(base({ groupByColumns: ['signal', 'device'] }));
+    const select = sql.slice(sql.indexOf('SELECT'), sql.indexOf('FROM'));
+    expect(select).toContain('signal');
+    expect(select).toContain('device');
+    expect(sql).toContain('GROUP BY 1, signal, device');
+  });
+
+  // Without bucketing there is no GROUP BY 1, but a split column is still a dimension
+  // and still has to reach the frame.
+  it('selects the split column when not bucketing by time', () => {
+    const sql = buildSQL(base({ groupByTime: false, groupByColumns: ['signal'] }));
+    const select = sql.slice(sql.indexOf('SELECT'), sql.indexOf('FROM'));
+    expect(select).toContain('signal');
+  });
+
+  it('does not select a split column twice when it is already a select field', () => {
+    const sql = buildSQL(
+      base({ select: [{ column: 'signal', aggregate: 'none' }], groupByColumns: ['signal'] })
+    );
+    const select = sql.slice(sql.indexOf('SELECT'), sql.indexOf('FROM'));
+    expect(select.match(/\bsignal\b/g)?.length).toBe(1);
   });
 
   it('orders descending when asked', () => {

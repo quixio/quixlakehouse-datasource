@@ -105,6 +105,7 @@ export interface BuilderState {
   /** Extra GROUP BY columns, e.g. a tag to split series by. */
   groupByColumns: string[];
   orderDescending: boolean;
+  /** Rows cap. Undefined or 0 emits no LIMIT clause at all. */
   limit?: number;
 }
 
@@ -115,7 +116,10 @@ export const DEFAULT_BUILDER: BuilderState = {
   interval: '$__interval',
   groupByColumns: [],
   orderDescending: false,
-  limit: 1000,
+  // No default limit. A default truncates silently: a 60-second recording looked one
+  // second long in testing because LIMIT 1000 was the whole panel and nothing said so.
+  // An empty field means unlimited (sc-74547).
+  limit: undefined,
 };
 
 /**
