@@ -590,6 +590,10 @@ function FilterRow({
       {/* Same Stack wrapper as SELECT chips: 4 px gap, vertically centred. */}
       <Stack direction="row" gap={0.5} alignItems="center">
         <IconButton name="times" aria-label="remove filter" onClick={onRemove} />
+        {/* The + lives on the last row, next to its x, the same shape SELECT uses.
+            Without it there is no way to add a second filter once the first exists --
+            which is exactly what a previous edit accidentally removed. */}
+        {isLast && <IconButton name="plus" aria-label="add filter" onClick={onAdd} />}
       </Stack>
     </InlineFieldRow>
   );
