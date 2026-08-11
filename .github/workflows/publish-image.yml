@@ -17,10 +17,13 @@ on:
   push:
     tags:
       - 'v*'
-    # Temporary: lets us test the deployment before there is anything to tag.
-    # Remove once v1 is cut.
+    # Any work branch, so a branch can be deployed and tested before it is tagged.
+    # Previously pinned to one story's branch, which meant a differently named branch
+    # silently produced no image at all.
     branches:
-      - 'feature/sc-74412/**'
+      - 'feature/**'
+      - 'bug/**'
+      - 'fix/**'
   workflow_dispatch:
 
 env:
