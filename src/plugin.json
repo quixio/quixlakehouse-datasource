@@ -13,17 +13,38 @@
   "annotations": false,
   "streaming": false,
   "info": {
-    "description": "Query the Quix Lakehouse (Apache Iceberg on object storage, DuckDB engine) from Grafana over Arrow Flight SQL.",
+    "description": "Query the Quix Lakehouse (Apache Iceberg on object storage, DuckDB engine) with SQL. Includes a visual query builder, dashboard variables from partition metadata, and alerting support.",
     "author": {
       "name": "Quix",
       "url": "https://quix.io"
     },
-    "keywords": ["sql", "iceberg", "duckdb", "timeseries", "lakehouse", "quix", "arrow", "flight"],
+    "keywords": ["sql", "iceberg", "duckdb", "timeseries", "lakehouse", "quix", "arrow"],
     "logos": {
       "small": "img/logo.svg",
       "large": "img/logo.svg"
     },
-    "links": [],
+    "links": [
+      {
+        "name": "Website",
+        "url": "https://quix.io"
+      },
+      {
+        "name": "Documentation",
+        "url": "https://github.com/quixio/quixlakehouse-datasource/blob/main/docs/INSTALL.md"
+      },
+      {
+        "name": "GitHub",
+        "url": "https://github.com/quixio/quixlakehouse-datasource"
+      },
+      {
+        "name": "Report an issue",
+        "url": "https://github.com/quixio/quixlakehouse-datasource/issues"
+      },
+      {
+        "name": "License",
+        "url": "https://github.com/quixio/quixlakehouse-datasource/blob/main/LICENSE"
+      }
+    ],
     "screenshots": [],
     "version": "%VERSION%",
     "updated": "%TODAY%"

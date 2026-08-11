@@ -56,3 +56,11 @@ docs/internal/
 
 # Local credentials. This repo is PUBLIC -- .env carries live SDK/PAT tokens.
 .env
+
+# Playwright MCP session artefacts: page snapshots, console logs and screenshots
+# written into the repo root while driving Grafana in a browser. Debugging output,
+# not source.
+.playwright-mcp/
+
+# Ad-hoc screenshots taken while checking the UI.
+/*.png
