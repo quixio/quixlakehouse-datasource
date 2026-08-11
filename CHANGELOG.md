@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.6 - unreleased
+
+- Fixed: "split by" grouped a column without selecting it, so the frame had nothing to
+  split series on. One line zig-zagged between groups, with no per-series legend or
+  colour. Split columns are now selected as dimensions. (sc-74547)
+- LIMIT no longer defaults to 1000. An empty field emits no LIMIT clause, so a query is
+  unbounded unless you cap it. The old default truncated silently. (sc-74547)
+
 ## 0.0.5 - unreleased
 
 - Relative time mode: the anchor is now "Run starts at", a positive epoch-millisecond
