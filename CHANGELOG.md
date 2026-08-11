@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.7 - unreleased
+
+- WHERE values are narrowed by the filters already set, so a second filter no longer
+  offers combinations that return no rows. (sc-74547)
+- Restored adding multiple WHERE filters; the + had been dropped by a styling edit.
+- LIMIT placeholder no longer shows a ghost "1000" that looked like an applied value.
+
 ## 0.0.6 - unreleased
 
 - Fixed: "split by" grouped a column without selecting it, so the frame had nothing to
