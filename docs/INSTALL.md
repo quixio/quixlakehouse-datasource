@@ -6,15 +6,18 @@ Catalog publication comes later; until then, install by one of the routes below.
 
 ## Before you start
 
-**Grafana 12.3 or newer.** Self-hosted — signing comes later.
+**Grafana 12.3 or newer** (`grafanaDependency: ">=12.3.0"` in `plugin.json`).
 
-**Allow the unsigned plugin**, or Grafana will not load it:
+**The plugin is unsigned**, so Grafana refuses to load it unless you allow it by id:
 
 ```
 GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=quix-quixlakehouse-datasource
 ```
 
-The plugin id is also the directory name and the datasource `type`:
+Signing comes later.
+
+You also need the plugin id itself, which is used as a directory name, an env var value
+and the datasource `type`:
 
 ```
 quix-quixlakehouse-datasource
