@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -331,14 +333,95 @@ func recordsToFrame(reader recordStream, opts frameOptions) (*data.Frame, error)
 	frame := data.NewFrame(opts.RefID, frameFields...)
 	frame.Meta = &data.FrameMeta{ExecutedQueryString: opts.ExecutedQuery}
 
-	// Declaring the wide time-series type lets Grafana skip its own guesswork.
-	// Only claim it when we actually produced a time field; the series must be
-	// ordered by time, which is the query author's job (ORDER BY), exactly as with
-	// every other SQL datasource.
 	if opts.Format != FormatTable && timeIdx >= 0 {
-		frame.Meta.Type = data.FrameTypeTimeSeriesWide
-		frame.Meta.TypeVersion = data.FrameTypeVersion{0, 1}
+		frame = shapeTimeSeries(frame)
 	}
 
 	return frame, nil
+}
+
+// shapeTimeSeries puts a time-series frame into the shape Grafana can plot.
+//
+// A GROUP BY on a tag produces a LONG frame -- time, the tag as a string column, and the
+// value -- with one row per (time, tag). Grafana cannot split that into series on its
+// own: it draws a single line named after the value column, which is why a `split by`
+// query rendered one plot with "value" in the legend instead of one line per tag
+// (sc-74547). data.LongToWide pivots it into one value field per distinct tag, each
+// carrying the tag as a field label, which is what the legend reads.
+//
+// Declaring the frame type at all lets Grafana skip its own guesswork, but the type has
+// to be honest: the previous version claimed WIDE unconditionally, so a long frame was
+// announced as something it was not and the string column was simply ignored.
+func shapeTimeSeries(frame *data.Frame) *data.Frame {
+	switch frame.TimeSeriesSchema().Type {
+	case data.TimeSeriesTypeLong:
+		wide, err := data.LongToWide(frame, nil)
+		if err != nil {
+			// LongToWide requires the rows to be sorted by time, which is the query
+			// author's job (ORDER BY) exactly as with every other SQL datasource. If they
+			// are not, return the long frame unshaped and unlabelled rather than failing
+			// the query: a table-shaped panel is recoverable, an error is not.
+			return frame
+		}
+		wide.Meta = frame.Meta
+		wide.Meta.Type = data.FrameTypeTimeSeriesWide
+		wide.Meta.TypeVersion = data.FrameTypeVersion{0, 1}
+		nameSeriesAfterLabels(wide)
+		return wide
+	case data.TimeSeriesTypeWide:
+		frame.Meta.Type = data.FrameTypeTimeSeriesWide
+		frame.Meta.TypeVersion = data.FrameTypeVersion{0, 1}
+		return frame
+	default:
+		// Not a time series at all -- no numeric field, say. Leave it alone; claiming a
+		// type Grafana then cannot honour is worse than claiming none.
+		return frame
+	}
+}
+
+// nameSeriesAfterLabels makes the legend read the tag rather than the value column.
+//
+// After the pivot every series carries the same field name -- "value" for a single
+// `avg(value)` -- and differs only by its labels, so Grafana's legend would read
+// "value {route=r1}". Naming the series after the tag alone is what the InfluxQL editor
+// this builder imitates does, and it is the difference between a legend that identifies a
+// route and one that says "value" three times.
+//
+// Only when there is exactly ONE distinct value-column name. With `avg(speed)` and
+// `avg(rpm)` in the same query the column name carries meaning of its own, and dropping
+// it would leave two different measures both labelled "r1".
+func nameSeriesAfterLabels(frame *data.Frame) {
+	valueFields := frame.Fields[1:]
+	if len(valueFields) < 2 {
+		return
+	}
+
+	names := map[string]struct{}{}
+	for _, f := range valueFields {
+		names[f.Name] = struct{}{}
+	}
+	if len(names) != 1 {
+		return
+	}
+
+	for _, f := range valueFields {
+		if len(f.Labels) == 0 {
+			continue
+		}
+		// Sorted, so a two-tag split reads the same way on every series rather than
+		// following Go's randomised map order.
+		keys := make([]string, 0, len(f.Labels))
+		for k := range f.Labels {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, f.Labels[k])
+		}
+		if f.Config == nil {
+			f.Config = &data.FieldConfig{}
+		}
+		f.Config.DisplayNameFromDS = strings.Join(parts, " ")
+	}
 }

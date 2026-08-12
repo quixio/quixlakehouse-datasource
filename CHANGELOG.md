@@ -9,6 +9,12 @@
 - Brackets can be put around any row, including the first. The control wraps a condition
   in place rather than appending a new group, so `(a OR b) AND c` is reachable from the
   builder instead of only from Code mode. (sc-74551)
+- Fixed: a `split by` query still drew a single plot with "value" in the legend. Grouping
+  by a tag returns a LONG frame (time, tag, value) which Grafana cannot split on its own,
+  and the backend was declaring every frame `timeseries-wide` regardless — announcing the
+  long frame as something it was not, so the tag column was ignored. Long frames are now
+  pivoted with `data.LongToWide`, giving one series per combination of split-column values,
+  each labelled and named after its tag values. (sc-74547)
 - Value dropdowns narrow only by conditions guaranteed to hold alongside the row being
   edited: `AND` siblings do, anything under an `OR` does not.
 - WHERE values are narrowed by the filters already set, whatever order the rows were
