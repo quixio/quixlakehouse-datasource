@@ -1,4 +1,5 @@
-import { BuilderState, QueryFormat } from '../types';
+import { BuilderCondition, BuilderGroup, BuilderNode, BuilderState, QueryFormat } from '../types';
+import { isFilled, whereTree } from './where';
 
 /**
  * Turns builder state into DuckDB SQL.
@@ -88,13 +89,25 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
   if (timeColumn !== '') {
     wheres.push(`$__timeFilter(${expr(timeColumn)})`);
   }
-  for (const f of state.filters) {
-    const key = (f.key ?? '').trim();
-    const value = (f.value ?? '').trim();
-    if (key === '' || value === '') {
-      continue;
+  const root = whereTree(state);
+  if (root.conjunction === 'AND') {
+    // Flat AND reads best one condition per line, which is also what this generator
+    // emitted before groups existed.
+    for (const child of root.children) {
+      const sql = renderNode(child);
+      if (sql !== '') {
+        wheres.push(sql);
+      }
     }
-    wheres.push(`${ident(key)} ${f.operator} ${literal(value)}`);
+  } else {
+    // An OR root must be bracketed as soon as anything else is ANDed with it, and
+    // $__timeFilter is exactly that: `$__timeFilter(t) AND a OR b` binds as
+    // `($__timeFilter(t) AND a) OR b`, so the right-hand branch loses its time bound
+    // and scans the whole table.
+    const sql = renderGroup(root, wheres.length > 0);
+    if (sql !== '') {
+      wheres.push(sql);
+    }
   }
 
   // GROUP BY 1 refers to the first select item -- the bucket expression. Repeating
@@ -144,6 +157,37 @@ export function buildSQL(state: BuilderState, format: QueryFormat = 'time_series
   }
 
   return lines.join('\n');
+}
+
+function renderCondition(condition: BuilderCondition): string {
+  if (!isFilled(condition)) {
+    return '';
+  }
+  return `${ident(condition.key.trim())} ${condition.operator} ${literal(condition.value.trim())}`;
+}
+
+function renderNode(node: BuilderNode): string {
+  return node.kind === 'condition' ? renderCondition(node.condition) : renderGroup(node.group, true);
+}
+
+/**
+ * SQL for one group, bracketed when it needs to be.
+ *
+ * `wrap` asks for brackets; they are still omitted when there is nothing to disambiguate.
+ * A group with one effective child is just that child, and `(x = 1)` adds noise to
+ * generated SQL that people read and edit. Empty conditions and empty groups render as
+ * '' and drop out, so a half-filled row never produces `a =  AND b = 1`.
+ */
+function renderGroup(group: BuilderGroup, wrap: boolean): string {
+  const parts = group.children.map(renderNode).filter((p) => p !== '');
+  if (parts.length === 0) {
+    return '';
+  }
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  const joined = parts.join(` ${group.conjunction} `);
+  return wrap ? `(${joined})` : joined;
 }
 
 /**

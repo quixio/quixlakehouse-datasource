@@ -85,6 +85,28 @@ export interface BuilderFilter {
   value: string;
 }
 
+/** One leaf of the WHERE tree. Structurally the legacy flat filter, so the narrowing
+ *  logic and its tests carry over unchanged. */
+export type BuilderCondition = BuilderFilter;
+
+export type Conjunction = 'AND' | 'OR';
+
+/**
+ * A bracketed group of conditions joined by one operator.
+ *
+ * Nested rather than flat because `OR` and brackets are one feature: `a AND b OR c` has
+ * two readings, so the moment a builder can emit `OR` it must also be able to say where
+ * the brackets go (sc-74551).
+ */
+export interface BuilderGroup {
+  conjunction: Conjunction;
+  children: BuilderNode[];
+}
+
+export type BuilderNode =
+  | { kind: 'condition'; condition: BuilderCondition }
+  | { kind: 'group'; group: BuilderGroup };
+
 /**
  * Visual builder state.
  *
@@ -97,7 +119,13 @@ export interface BuilderState {
   table?: string;
   timeColumn?: string;
   select: BuilderSelect[];
+  /**
+   * LEGACY: the flat AND-only filter list, kept so panels saved before nested groups
+   * still generate the same SQL. Migrated on read by whereTree(); nothing writes it.
+   */
   filters: BuilderFilter[];
+  /** The WHERE predicate. Canonical once the user has touched the WHERE rows. */
+  where?: BuilderGroup;
   /** Emit GROUP BY $__timeGroup(timeColumn, interval), so buckets follow zoom. */
   groupByTime: boolean;
   /** Bucket width. $__interval means "whatever the panel is showing". */

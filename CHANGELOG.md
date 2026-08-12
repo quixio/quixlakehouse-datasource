@@ -2,6 +2,17 @@
 
 ## 0.0.6 - unreleased
 
+- WHERE now supports `AND`/`OR` with bracketed groups, so predicates like
+  `(a AND b) OR (c AND d)` can be built without dropping to Code mode. Nesting is shown
+  with indentation and a left rule, and an `OR` at the top level is always bracketed so
+  `$__timeFilter` keeps bounding every branch. (sc-74551)
+- Value dropdowns narrow only by conditions guaranteed to hold alongside the row being
+  edited: `AND` siblings do, anything under an `OR` does not.
+- WHERE values are narrowed by the filters already set, whatever order the rows were
+  added in and wherever the columns sit in the partition spec. The catalog intersects
+  constraints in any direction, so restricting this to ancestors silently disabled
+  narrowing on every column that was not the deepest. (sc-74547)
+
 - Fixed: "split by" grouped a column without selecting it, so the frame had nothing to
   split series on. One line zig-zagged between groups, with no per-series legend or
   colour. Split columns are now selected as dimensions. (sc-74547)

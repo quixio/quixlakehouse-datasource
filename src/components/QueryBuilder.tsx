@@ -1,10 +1,40 @@
 import { SelectableValue } from '@grafana/data';
-import { Alert, IconButton, InlineField, InlineFieldRow, Input, Select, Stack, TextArea } from '@grafana/ui';
+import {
+  Alert,
+  IconButton,
+  InlineField,
+  InlineFieldRow,
+  InlineLabel,
+  Input,
+  Select,
+  Stack,
+  TextArea,
+} from '@grafana/ui';
 import React, { ChangeEvent, useCallback, useEffect, useState } from 'react';
 
 import { DataSource } from '../datasource';
 import { partitionValuesParams } from '../builder/filters';
-import { AggregateFn, BuilderState, FilterOperator, QueryFormat } from '../types';
+import {
+  conditionKeys,
+  conditionNode,
+  groupNode,
+  guaranteedFor,
+  newGroup,
+  prune,
+  whereTree,
+  withAppended,
+  withChild,
+  withoutChild,
+} from '../builder/where';
+import {
+  AggregateFn,
+  BuilderCondition,
+  BuilderGroup,
+  BuilderState,
+  Conjunction,
+  FilterOperator,
+  QueryFormat,
+} from '../types';
 
 // 18 × 8 px = 144 px, of which 128 px is content (the label has 8 px padding each
 // side). Measured in the browser, the longest labels -- "Generated SQL", "TIME COLUMN"
@@ -27,6 +57,20 @@ const OPERATOR_OPTIONS: Array<SelectableValue<FilterOperator>> = ['=', '!=', '>'
   label: o,
   value: o as FilterOperator,
 }));
+
+const CONJUNCTION_OPTIONS: Array<SelectableValue<Conjunction>> = [
+  { label: 'AND', value: 'AND' },
+  { label: 'OR', value: 'OR' },
+];
+
+// A left rule plus indentation, so the bracket the generator will emit is visible rather
+// than implied. Inline rather than emotion: it is two properties and does not need a
+// theme.
+const NESTED_GROUP_STYLE: React.CSSProperties = {
+  paddingLeft: 12,
+  marginLeft: 4,
+  borderLeft: '2px solid rgba(127, 127, 127, 0.35)',
+};
 
 // Mirrors timeColumnNameHints in pkg/plugin/timefmt.go, which the backend uses to
 // auto-detect a time column when the query does not name one. Keeping the two in step
@@ -144,9 +188,13 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
     };
   }, [table, datasource]);
 
+  // Migrated on read, so a panel saved before nested groups existed edits as a tree
+  // without a second code path. See whereTree().
+  const where = whereTree(builder);
+
   /** The next partition column not already filtered on, so "+" lands on something useful. */
   const nextUnusedColumn = (): string => {
-    const used = new Set(builder.filters.map((f) => f.key));
+    const used = new Set(conditionKeys(where));
     return partitionColumns.find((c) => !used.has(c)) ?? '';
   };
 
@@ -318,33 +366,24 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
       ))}
 
       {/* WHERE */}
-      {builder.filters.map((f, i) => (
-        <FilterRow
-          key={`f-${i}`}
-          index={i}
-          isLast={i === builder.filters.length - 1}
-          onAdd={() => set({ filters: [...builder.filters, { key: nextUnusedColumn(), operator: '=', value: '' }] })}
-          filter={f}
+      {where.children.length > 0 ? (
+        <WhereGroupRows
+          group={where}
+          isRoot
+          inherited={[]}
           table={table}
           partitionColumns={partitionColumns}
-          otherFilters={builder.filters.filter((_, j) => j !== i)}
           datasource={datasource}
-          onChange={(next) => {
-            const copy = [...builder.filters];
-            copy[i] = next;
-            set({ filters: copy });
-          }}
-          onRemove={() => {
-            set({ filters: builder.filters.filter((_, j) => j !== i) });
-            onRunQuery();
-          }}
+          nextUnusedColumn={nextUnusedColumn}
+          // Pruned here, at the root, so a removal anywhere in the tree is cleaned up in
+          // one place: every nested change bubbles up through this callback.
+          onChange={(next) => set({ where: prune(next) })}
           onRunQuery={onRunQuery}
         />
-      ))}
-      {/* Only shown when there are no filters yet. Once one exists the + lives on the
-          last row, which avoids a second row whose only content is an empty 144px
-          label box and an orphaned tooltip icon. */}
-      {builder.filters.length === 0 && (
+      ) : (
+        /* Only shown while the predicate is empty. Once a row exists the + lives on the
+           last row of its group, which avoids a second row whose only content is an
+           empty 144px label box and an orphaned tooltip icon. */
         <InlineFieldRow>
           <InlineField
             label="WHERE"
@@ -360,7 +399,7 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
               name="plus"
               aria-label="add filter"
               onClick={() =>
-                set({ filters: [...builder.filters, { key: nextUnusedColumn(), operator: '=', value: '' }] })
+                set({ where: withAppended(where, conditionNode({ key: nextUnusedColumn(), operator: '=', value: '' })) })
               }
             />
           </InlineField>
@@ -490,25 +529,204 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
   );
 }
 
+interface WhereGroupProps {
+  group: BuilderGroup;
+  /** The root group owns the "WHERE" label; nested ones are shown by indentation. */
+  isRoot?: boolean;
+  /**
+   * Conditions guaranteed by ancestor groups. Threaded down rather than reconstructed
+   * from a path, so each level only has to reason about its own conjunction.
+   */
+  inherited: BuilderCondition[];
+  table: string;
+  partitionColumns: string[];
+  datasource: DataSource;
+  nextUnusedColumn: () => string;
+  onChange: (next: BuilderGroup) => void;
+  onRemoveGroup?: () => void;
+  onRunQuery: () => void;
+}
+
+/**
+ * One bracketed group of WHERE conditions, rendered recursively.
+ *
+ * The conjunction belongs to the GROUP, not to the row: `a AND b OR c` has no single
+ * meaning, so an operator per row would let the user build a predicate the generator has
+ * to guess at. Every row after the first therefore shows the same selector, and changing
+ * any of them changes the group — which is also how Grafana's InfluxQL editor behaves.
+ * Mixing operators is done by adding a nested group, and the indentation shows exactly
+ * where the generated brackets will fall.
+ */
+function WhereGroupRows({
+  group,
+  isRoot,
+  inherited,
+  table,
+  partitionColumns,
+  datasource,
+  nextUnusedColumn,
+  onChange,
+  onRemoveGroup,
+  onRunQuery,
+}: WhereGroupProps) {
+  const addCondition = () =>
+    onChange(withAppended(group, conditionNode({ key: nextUnusedColumn(), operator: '=', value: '' })));
+
+  // A new group starts with the opposite operator and one row. The opposite, because the
+  // only reason to nest is to mix operators -- nesting AND inside AND changes nothing,
+  // so defaulting to it would make the button look broken.
+  const addGroup = () =>
+    onChange(
+      withAppended(
+        group,
+        groupNode(
+          newGroup(group.conjunction === 'AND' ? 'OR' : 'AND', [
+            conditionNode({ key: nextUnusedColumn(), operator: '=', value: '' }),
+          ])
+        )
+      )
+    );
+
+  return (
+    <>
+      {group.children.map((child, i) => {
+        const isLast = i === group.children.length - 1;
+        const conjunction = i === 0 ? undefined : group.conjunction;
+        const onConjunction = (c: Conjunction) => {
+          onChange({ ...group, conjunction: c });
+          onRunQuery();
+        };
+
+        if (child.kind === 'group') {
+          return (
+            <React.Fragment key={`g-${i}`}>
+              {/* The opening bracket is a real row so the operator joining this group to
+                  the one above it has somewhere to live. */}
+              <InlineFieldRow>
+                {conjunction ? (
+                  <ConjunctionSlot value={conjunction} onChange={onConjunction} />
+                ) : (
+                  <InlineLabel width={LABEL_WIDTH} transparent={!(isRoot && i === 0)}>
+                    {isRoot && i === 0 ? 'WHERE' : ''}
+                  </InlineLabel>
+                )}
+                <InlineLabel width="auto" transparent>
+                  (
+                </InlineLabel>
+              </InlineFieldRow>
+              <div style={NESTED_GROUP_STYLE}>
+                <WhereGroupRows
+                  group={child.group}
+                  inherited={guaranteedFor(group, inherited, i)}
+                  table={table}
+                  partitionColumns={partitionColumns}
+                  datasource={datasource}
+                  nextUnusedColumn={nextUnusedColumn}
+                  onChange={(next) => onChange(withChild(group, i, groupNode(next)))}
+                  onRemoveGroup={() => {
+                    onChange(withoutChild(group, i));
+                    onRunQuery();
+                  }}
+                  onRunQuery={onRunQuery}
+                />
+              </div>
+              {/* This group's own + chips, which would otherwise have nowhere to sit when
+                  its last child is a bracketed group. */}
+              {isLast && (
+                <InlineFieldRow>
+                  <InlineLabel width={LABEL_WIDTH} transparent>
+                    {''}
+                  </InlineLabel>
+                  <GroupAdders onAddCondition={addCondition} onAddGroup={addGroup} />
+                </InlineFieldRow>
+              )}
+            </React.Fragment>
+          );
+        }
+
+        return (
+          <FilterRow
+            key={`f-${i}`}
+            isRoot={!!isRoot}
+            first={i === 0}
+            conjunction={conjunction}
+            onConjunction={onConjunction}
+            isLast={isLast}
+            onAdd={addCondition}
+            onAddGroup={addGroup}
+            onRemoveGroup={onRemoveGroup}
+            filter={child.condition}
+            table={table}
+            partitionColumns={partitionColumns}
+            guaranteed={guaranteedFor(group, inherited, i)}
+            datasource={datasource}
+            onChange={(next) => onChange(withChild(group, i, conditionNode(next)))}
+            onRemove={() => {
+              onChange(withoutChild(group, i));
+              onRunQuery();
+            }}
+            onRunQuery={onRunQuery}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+/** AND/OR in the label column, so the controls stay in one vertical line. */
+function ConjunctionSlot({ value, onChange }: { value: Conjunction; onChange: (c: Conjunction) => void }) {
+  return (
+    <Select
+      options={CONJUNCTION_OPTIONS}
+      value={CONJUNCTION_OPTIONS.find((o) => o.value === value)}
+      width={LABEL_WIDTH}
+      onChange={(v) => onChange((v.value ?? 'AND') as Conjunction)}
+      aria-label="conjunction"
+    />
+  );
+}
+
+function GroupAdders({ onAddCondition, onAddGroup }: { onAddCondition: () => void; onAddGroup: () => void }) {
+  return (
+    <Stack direction="row" gap={0.5} alignItems="center">
+      {/* No tooltip prop: Grafana's IconButton derives its accessible name from the
+          tooltip when one is set, which renames the control out from under the tests
+          asserting a + is reachable. The + is self-explanatory anyway. */}
+      <IconButton name="plus" aria-label="add filter" onClick={onAddCondition} />
+      <IconButton name="plus-circle" aria-label="add group" onClick={onAddGroup} />
+    </Stack>
+  );
+}
+
 interface FilterRowProps {
-  index: number;
-  /** The last row carries the + chip, so there is no separate add row to label. */
+  /** Rows in the root group carry the "WHERE" label; nested rows are indented instead. */
+  isRoot: boolean;
+  first: boolean;
+  /** Undefined on the first row of a group: there is nothing above it to join to. */
+  conjunction?: Conjunction;
+  onConjunction: (c: Conjunction) => void;
+  /** The last row carries the + chips, so there is no separate add row to label. */
   isLast: boolean;
   onAdd: () => void;
-  filter: { key: string; operator: FilterOperator; value: string };
+  onAddGroup: () => void;
+  /** Present on nested rows: removes the whole bracketed group. */
+  onRemoveGroup?: () => void;
+  filter: BuilderCondition;
   table: string;
   /** Preloaded by the parent when the table changes, so this row opens ready. */
   partitionColumns: string[];
   /**
-   * Every other filter on the panel, so this row's values can be narrowed by them.
+   * The conditions guaranteed to hold alongside this row, so its values can be narrowed
+   * by them.
    *
    * Without this a second filter offers every value of its column, including ones that
    * cannot co-exist with the first — pick one and the query returns nothing, with no
-   * indication why.
+   * indication why. Only AND-siblings qualify: under OR nothing is guaranteed, so
+   * narrowing there would hide values that are perfectly valid.
    */
-  otherFilters: Array<{ key: string; operator: FilterOperator; value: string }>;
+  guaranteed: BuilderCondition[];
   datasource: DataSource;
-  onChange: (next: { key: string; operator: FilterOperator; value: string }) => void;
+  onChange: (next: BuilderCondition) => void;
   onRemove: () => void;
   onRunQuery: () => void;
 }
@@ -522,19 +740,39 @@ interface FilterRowProps {
  * for lists the user may never open.
  */
 function FilterRow({
-  index,
+  isRoot,
+  first,
+  conjunction,
+  onConjunction,
   isLast,
   onAdd,
+  onAddGroup,
+  onRemoveGroup,
   filter,
   table,
   partitionColumns,
-  otherFilters,
+  guaranteed,
   datasource,
   onChange,
   onRemove,
   onRunQuery,
 }: FilterRowProps) {
-  const [options, setOptions] = useState<Array<SelectableValue<string>>>([]);
+  /**
+   * Loaded values, stored WITH the column and table they belong to.
+   *
+   * Rows are keyed by index, so removing one hands its component instance -- and anything
+   * it had already loaded -- to the row that shifts up into its place. Keyed this way the
+   * inherited list simply does not match and is ignored, instead of the row offering
+   * another column's values. Same shape as `loaded` above, and for the same reason:
+   * clearing it from an effect is a synchronous setState, which triggers cascading
+   * renders and is rejected by lint.
+   */
+  const [loadedValues, setLoadedValues] = useState<{
+    table: string;
+    key: string;
+    values: Array<SelectableValue<string>>;
+  }>({ table: '', key: '', values: [] });
+  const options = loadedValues.table === table && loadedValues.key === filter.key ? loadedValues.values : [];
   const [loading, setLoading] = useState(false);
   const columns: Array<SelectableValue<string>> = partitionColumns.map((c) => ({ label: c, value: c }));
 
@@ -544,16 +782,20 @@ function FilterRow({
     }
     setLoading(true);
     try {
-      // Extracted to keep the ancestor rules testable without driving a react-select
+      // Extracted to keep the narrowing rules testable without driving a react-select
       // in jsdom, where the placeholder is a div and interaction is fragile.
-      const params = partitionValuesParams(table, filter.key, otherFilters, partitionColumns);
+      const params = partitionValuesParams(table, filter.key, guaranteed, partitionColumns);
       const res = await datasource.getResource('partition-values', params);
-      setOptions((res?.values ?? []).map((v: string) => ({ label: v, value: v })));
+      setLoadedValues({
+        table,
+        key: filter.key,
+        values: (res?.values ?? []).map((v: string) => ({ label: v, value: v })),
+      });
     } catch (_e) {
       // A column that is not a partition has no manifest entry. Leaving the list
       // empty with allowCustomValue still lets the user type a literal, which is the
       // right outcome for a non-partition column.
-      setOptions([]);
+      setLoadedValues({ table, key: filter.key, values: [] });
     } finally {
       setLoading(false);
     }
@@ -561,7 +803,18 @@ function FilterRow({
 
   return (
     <InlineFieldRow>
-      <InlineField label={index === 0 ? 'WHERE' : ''} labelWidth={LABEL_WIDTH}>
+      {/* The label column holds one of three things, so every control below stays in the
+          same vertical line: the WHERE label on the root's first row, the group's AND/OR
+          on any row that follows another, and nothing on a nested group's first row --
+          the indentation already says what it is. */}
+      {conjunction ? (
+        <ConjunctionSlot value={conjunction} onChange={onConjunction} />
+      ) : (
+        <InlineLabel width={LABEL_WIDTH} transparent={!(isRoot && first)}>
+          {isRoot && first ? 'WHERE' : ''}
+        </InlineLabel>
+      )}
+      <InlineField>
         {/* allowCustomValue: partition columns are the ones worth filtering on, but
             filtering on an ordinary column is still legal and sometimes wanted. */}
         <Select
@@ -572,9 +825,9 @@ function FilterRow({
           allowCustomValue
           onChange={(v) => {
             // Clear the value: it belonged to the previous column and would silently
-            // become a filter that matches nothing.
+            // become a filter that matches nothing. The loaded value list needs no
+            // clearing — it is keyed to the column, so it stops matching on its own.
             onChange({ ...filter, key: v?.value ?? '', value: '' });
-            setOptions([]);
           }}
         />
       </InlineField>
@@ -610,7 +863,16 @@ function FilterRow({
         {/* The + lives on the last row, next to its x, the same shape SELECT uses.
             Without it there is no way to add a second filter once the first exists --
             which is exactly what a previous edit accidentally removed. */}
-        {isLast && <IconButton name="plus" aria-label="add filter" onClick={onAdd} />}
+        {isLast && <GroupAdders onAddCondition={onAdd} onAddGroup={onAddGroup} />}
+        {/* Closing bracket and a way out of the group, on its last row only. */}
+        {isLast && onRemoveGroup && (
+          <>
+            <InlineLabel width="auto" transparent>
+              )
+            </InlineLabel>
+            <IconButton name="trash-alt" aria-label="remove group" onClick={onRemoveGroup} />
+          </>
+        )}
       </Stack>
     </InlineFieldRow>
   );
