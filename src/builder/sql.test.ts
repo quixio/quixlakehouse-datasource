@@ -114,9 +114,7 @@ describe('buildSQL', () => {
   });
 
   it('does not select a split column twice when it is already a select field', () => {
-    const sql = buildSQL(
-      base({ select: [{ column: 'signal', aggregate: 'none' }], groupByColumns: ['signal'] })
-    );
+    const sql = buildSQL(base({ select: [{ column: 'signal', aggregate: 'none' }], groupByColumns: ['signal'] }));
     const select = sql.slice(sql.indexOf('SELECT'), sql.indexOf('FROM'));
     expect(select.match(/\bsignal\b/g)?.length).toBe(1);
   });
@@ -140,7 +138,10 @@ describe('buildSQL', () => {
   });
 
   it('omits the time field for a table query with no time column', () => {
-    const sql = buildSQL(base({ timeColumn: '', groupByTime: false, select: [{ column: 'speed', aggregate: 'none' }] }), 'table');
+    const sql = buildSQL(
+      base({ timeColumn: '', groupByTime: false, select: [{ column: 'speed', aggregate: 'none' }] }),
+      'table'
+    );
     expect(sql).not.toContain('AS time');
     expect(sql).not.toContain('$__timeFilter');
   });

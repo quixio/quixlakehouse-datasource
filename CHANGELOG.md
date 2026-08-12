@@ -6,6 +6,9 @@
   `(a AND b) OR (c AND d)` can be built without dropping to Code mode. Nesting is shown
   with indentation and a left rule, and an `OR` at the top level is always bracketed so
   `$__timeFilter` keeps bounding every branch. (sc-74551)
+- Brackets can be put around any row, including the first. The control wraps a condition
+  in place rather than appending a new group, so `(a OR b) AND c` is reachable from the
+  builder instead of only from Code mode. (sc-74551)
 - Value dropdowns narrow only by conditions guaranteed to hold alongside the row being
   edited: `AND` siblings do, anything under an `OR` does not.
 - WHERE values are narrowed by the filters already set, whatever order the rows were

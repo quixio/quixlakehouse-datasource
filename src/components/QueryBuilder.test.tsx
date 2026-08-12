@@ -96,9 +96,59 @@ describe('WHERE group affordances', () => {
     },
   };
 
-  it('offers a way to add a bracketed group', () => {
-    renderBuilder(withFilters(1));
-    expect(screen.getAllByLabelText('add group').length).toBeGreaterThan(0);
+  it('offers a way to bracket every row, including the first', () => {
+    renderBuilder(withFilters(3));
+    expect(screen.getAllByLabelText('wrap in brackets')).toHaveLength(3);
+  });
+
+  /**
+   * The regression: brackets could only be APPENDED, so the first condition could never
+   * be put inside them — `(a OR b) AND c` was unreachable from the builder even though
+   * the generator could emit it.
+   */
+  it('brackets the first row in place, without disturbing the others', () => {
+    const onChange = jest.fn();
+    render(
+      <QueryBuilder
+        builder={withFilters(2)}
+        format="time_series"
+        datasource={datasource}
+        generatedSQL=""
+        onChange={onChange}
+        onRunQuery={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getAllByLabelText('wrap in brackets')[0]);
+
+    const next = onChange.mock.calls[0][0] as BuilderState;
+    expect(next.where?.children).toHaveLength(2);
+    const [first, second] = next.where!.children;
+    expect(first.kind).toBe('group');
+    expect(first.kind === 'group' && first.group.children).toHaveLength(1);
+    expect(second.kind).toBe('condition');
+  });
+
+  // Nesting AND inside AND changes nothing, so a bracket that opens with the same
+  // operator as its parent looks broken.
+  it('opens a bracket with the opposite conjunction to its parent', () => {
+    const onChange = jest.fn();
+    render(
+      <QueryBuilder
+        builder={withFilters(2)}
+        format="time_series"
+        datasource={datasource}
+        generatedSQL=""
+        onChange={onChange}
+        onRunQuery={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getAllByLabelText('wrap in brackets')[0]);
+
+    const next = onChange.mock.calls[0][0] as BuilderState;
+    const first = next.where!.children[0];
+    expect(first.kind === 'group' && first.group.conjunction).toBe('OR');
   });
 
   it('renders the rows of a nested group', () => {

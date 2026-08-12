@@ -399,7 +399,9 @@ export function QueryBuilder({ builder, format, datasource, generatedSQL, onChan
               name="plus"
               aria-label="add filter"
               onClick={() =>
-                set({ where: withAppended(where, conditionNode({ key: nextUnusedColumn(), operator: '=', value: '' })) })
+                set({
+                  where: withAppended(where, conditionNode({ key: nextUnusedColumn(), operator: '=', value: '' })),
+                })
               }
             />
           </InlineField>
@@ -572,18 +574,24 @@ function WhereGroupRows({
   const addCondition = () =>
     onChange(withAppended(group, conditionNode({ key: nextUnusedColumn(), operator: '=', value: '' })));
 
-  // A new group starts with the opposite operator and one row. The opposite, because the
-  // only reason to nest is to mix operators -- nesting AND inside AND changes nothing,
-  // so defaulting to it would make the button look broken.
-  const addGroup = () =>
+  /**
+   * Put brackets around one existing row, in place.
+   *
+   * This replaced an "add group" button that could only APPEND a group, which meant the
+   * FIRST condition could never be bracketed and `(a OR b) AND c` was unreachable from the
+   * builder even though the generator could emit it. Wrapping is also the more general
+   * primitive: a fresh sibling group is still one extra click away — add a row, bracket it
+   * — so one control replaces two.
+   *
+   * The bracket opens with the opposite operator, because the only reason to nest is to
+   * mix them; nesting AND inside AND changes nothing and would look broken.
+   */
+  const wrapChild = (index: number, condition: BuilderCondition) =>
     onChange(
-      withAppended(
+      withChild(
         group,
-        groupNode(
-          newGroup(group.conjunction === 'AND' ? 'OR' : 'AND', [
-            conditionNode({ key: nextUnusedColumn(), operator: '=', value: '' }),
-          ])
-        )
+        index,
+        groupNode(newGroup(group.conjunction === 'AND' ? 'OR' : 'AND', [conditionNode(condition)]))
       )
     );
 
@@ -630,14 +638,14 @@ function WhereGroupRows({
                   onRunQuery={onRunQuery}
                 />
               </div>
-              {/* This group's own + chips, which would otherwise have nowhere to sit when
+              {/* This group's own + chip, which would otherwise have nowhere to sit when
                   its last child is a bracketed group. */}
               {isLast && (
                 <InlineFieldRow>
                   <InlineLabel width={LABEL_WIDTH} transparent>
                     {''}
                   </InlineLabel>
-                  <GroupAdders onAddCondition={addCondition} onAddGroup={addGroup} />
+                  <IconButton name="plus" aria-label="add filter" onClick={addCondition} />
                 </InlineFieldRow>
               )}
             </React.Fragment>
@@ -653,7 +661,7 @@ function WhereGroupRows({
             onConjunction={onConjunction}
             isLast={isLast}
             onAdd={addCondition}
-            onAddGroup={addGroup}
+            onWrap={() => wrapChild(i, child.condition)}
             onRemoveGroup={onRemoveGroup}
             filter={child.condition}
             table={table}
@@ -686,18 +694,6 @@ function ConjunctionSlot({ value, onChange }: { value: Conjunction; onChange: (c
   );
 }
 
-function GroupAdders({ onAddCondition, onAddGroup }: { onAddCondition: () => void; onAddGroup: () => void }) {
-  return (
-    <Stack direction="row" gap={0.5} alignItems="center">
-      {/* No tooltip prop: Grafana's IconButton derives its accessible name from the
-          tooltip when one is set, which renames the control out from under the tests
-          asserting a + is reachable. The + is self-explanatory anyway. */}
-      <IconButton name="plus" aria-label="add filter" onClick={onAddCondition} />
-      <IconButton name="plus-circle" aria-label="add group" onClick={onAddGroup} />
-    </Stack>
-  );
-}
-
 interface FilterRowProps {
   /** Rows in the root group carry the "WHERE" label; nested rows are indented instead. */
   isRoot: boolean;
@@ -705,10 +701,11 @@ interface FilterRowProps {
   /** Undefined on the first row of a group: there is nothing above it to join to. */
   conjunction?: Conjunction;
   onConjunction: (c: Conjunction) => void;
-  /** The last row carries the + chips, so there is no separate add row to label. */
+  /** The last row carries the + chip, so there is no separate add row to label. */
   isLast: boolean;
   onAdd: () => void;
-  onAddGroup: () => void;
+  /** Put brackets around this row in place. Available on every row, including the first. */
+  onWrap: () => void;
   /** Present on nested rows: removes the whole bracketed group. */
   onRemoveGroup?: () => void;
   filter: BuilderCondition;
@@ -746,7 +743,7 @@ function FilterRow({
   onConjunction,
   isLast,
   onAdd,
-  onAddGroup,
+  onWrap,
   onRemoveGroup,
   filter,
   table,
@@ -860,10 +857,17 @@ function FilterRow({
       {/* Same Stack wrapper as SELECT chips: 4 px gap, vertically centred. */}
       <Stack direction="row" gap={0.5} alignItems="center">
         <IconButton name="times" aria-label="remove filter" onClick={onRemove} />
+        {/* On every row, not just the last: brackets that could only be appended left the
+            FIRST condition impossible to bracket.
+
+            No tooltip prop on these: Grafana's IconButton derives its accessible name from
+            the tooltip when one is set, which renames the control out from under the tests
+            asserting it is reachable. */}
+        <IconButton name="brackets-curly" aria-label="wrap in brackets" onClick={onWrap} />
         {/* The + lives on the last row, next to its x, the same shape SELECT uses.
             Without it there is no way to add a second filter once the first exists --
             which is exactly what a previous edit accidentally removed. */}
-        {isLast && <GroupAdders onAddCondition={onAdd} onAddGroup={onAddGroup} />}
+        {isLast && <IconButton name="plus" aria-label="add filter" onClick={onAdd} />}
         {/* Closing bracket and a way out of the group, on its last row only. */}
         {isLast && onRemoveGroup && (
           <>

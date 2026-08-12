@@ -103,9 +103,7 @@ export interface BuilderGroup {
   children: BuilderNode[];
 }
 
-export type BuilderNode =
-  | { kind: 'condition'; condition: BuilderCondition }
-  | { kind: 'group'; group: BuilderGroup };
+export type BuilderNode = { kind: 'condition'; condition: BuilderCondition } | { kind: 'group'; group: BuilderGroup };
 
 /**
  * Visual builder state.
