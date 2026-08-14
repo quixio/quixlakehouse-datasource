@@ -23,6 +23,16 @@
       "small": "img/logo.svg",
       "large": "img/logo.svg"
     },
+    "screenshots": [
+      {
+        "name": "Visual query builder",
+        "path": "img/query-builder.png"
+      },
+      {
+        "name": "Multi-series panel",
+        "path": "img/dashboard.png"
+      }
+    ],
     "links": [
       {
         "name": "Website",
@@ -45,7 +55,6 @@
         "url": "https://github.com/quixio/quixlakehouse-datasource/blob/main/LICENSE"
       }
     ],
-    "screenshots": [],
     "version": "%VERSION%",
     "updated": "%TODAY%"
   },
