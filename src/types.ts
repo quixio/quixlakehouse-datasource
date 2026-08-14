@@ -85,6 +85,26 @@ export interface BuilderFilter {
   value: string;
 }
 
+/** One leaf of the WHERE tree. Structurally the legacy flat filter, so the narrowing
+ *  logic and its tests carry over unchanged. */
+export type BuilderCondition = BuilderFilter;
+
+export type Conjunction = 'AND' | 'OR';
+
+/**
+ * A bracketed group of conditions joined by one operator.
+ *
+ * Nested rather than flat because `OR` and brackets are one feature: `a AND b OR c` has
+ * two readings, so the moment a builder can emit `OR` it must also be able to say where
+ * the brackets go (sc-74551).
+ */
+export interface BuilderGroup {
+  conjunction: Conjunction;
+  children: BuilderNode[];
+}
+
+export type BuilderNode = { kind: 'condition'; condition: BuilderCondition } | { kind: 'group'; group: BuilderGroup };
+
 /**
  * Visual builder state.
  *
@@ -97,7 +117,13 @@ export interface BuilderState {
   table?: string;
   timeColumn?: string;
   select: BuilderSelect[];
+  /**
+   * LEGACY: the flat AND-only filter list, kept so panels saved before nested groups
+   * still generate the same SQL. Migrated on read by whereTree(); nothing writes it.
+   */
   filters: BuilderFilter[];
+  /** The WHERE predicate. Canonical once the user has touched the WHERE rows. */
+  where?: BuilderGroup;
   /** Emit GROUP BY $__timeGroup(timeColumn, interval), so buckets follow zoom. */
   groupByTime: boolean;
   /** Bucket width. $__interval means "whatever the panel is showing". */
@@ -105,6 +131,7 @@ export interface BuilderState {
   /** Extra GROUP BY columns, e.g. a tag to split series by. */
   groupByColumns: string[];
   orderDescending: boolean;
+  /** Rows cap. Undefined or 0 emits no LIMIT clause at all. */
   limit?: number;
 }
 
@@ -115,7 +142,10 @@ export const DEFAULT_BUILDER: BuilderState = {
   interval: '$__interval',
   groupByColumns: [],
   orderDescending: false,
-  limit: 1000,
+  // No default limit. A default truncates silently: a 60-second recording looked one
+  // second long in testing because LIMIT 1000 was the whole panel and nothing said so.
+  // An empty field means unlimited (sc-74547).
+  limit: undefined,
 };
 
 /**
@@ -153,10 +183,12 @@ export const DEFAULT_QUERY: Partial<QuixLakeQuery> = {
   // it, and seeding a template would both fight the builder and make the editor
   // open in Code mode, since a non-empty rawSql is what selects that view.
   //
-  // The "safe default" still holds -- it just lives in DEFAULT_BUILDER now, which
-  // starts with time bucketing on at $__interval and LIMIT 1000, so the first query
-  // anyone generates is bounded and scales with zoom. DEFAULT_SQL remains the
-  // placeholder shown in Code mode.
+  // DEFAULT_BUILDER starts with time bucketing on at $__interval, so a generated query
+  // scales with zoom. It no longer carries a row cap: a default LIMIT truncated
+  // silently, which is worse than no limit (sc-74547). Nothing else bounds the result
+  // either, since maxDataPoints is not pushed down -- tracked as a follow-up on that
+  // story. DEFAULT_SQL remains the placeholder shown in Code mode, and does include a
+  // LIMIT, because an example query is the right place to demonstrate capping one.
   editorMode: 'builder',
   builder: DEFAULT_BUILDER,
   rawSql: '',

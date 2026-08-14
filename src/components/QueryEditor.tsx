@@ -40,7 +40,6 @@ function unitsPerMillisecond(format: TimeFormat): number | null {
   }
 }
 
-
 /**
  * Turns the user-facing anchor into the offset the backend subtracts.
  *
@@ -445,10 +444,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         <Alert severity="info" title="Relative mode shifts the data, so the dashboard range must match">
           Two anchors, and they need different ranges. <strong>Detect</strong> puts zero at the start of the run, and
           zero is the Unix epoch — so set the timezone to <strong>UTC</strong> and an absolute range from{' '}
-          <strong>1970-01-01 00:00:00</strong>. <strong>End at now</strong> instead lands the last sample on the
-          current clock, so an ordinary <strong>Last 6 hours</strong> works with no setup. Until the range matches the
-          anchor the panel is empty, because the data has moved outside the visible window. Either way, do not put an
-          alert rule on a relative panel — the timestamps are fabricated.
+          <strong>1970-01-01 00:00:00</strong>. <strong>End at now</strong> instead lands the last sample on the current
+          clock, so an ordinary <strong>Last 6 hours</strong> works with no setup. Until the range matches the anchor
+          the panel is empty, because the data has moved outside the visible window. Either way, do not put an alert
+          rule on a relative panel — the timestamps are fabricated.
         </Alert>
       )}
 
