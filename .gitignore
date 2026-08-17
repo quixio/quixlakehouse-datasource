@@ -64,3 +64,8 @@ docs/internal/
 
 # Ad-hoc screenshots taken while checking the UI.
 /*.png
+
+# Throwaway payloads written to the repo root while poking the API or Grafana by hand
+# (query bodies, dashboard JSON, SQL). Deleted after use, ignored so a forgotten one
+# cannot be committed.
+/scratch-*

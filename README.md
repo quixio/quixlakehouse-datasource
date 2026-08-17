@@ -1,14 +1,29 @@
 # QuixLakeHouse Grafana data source plugin
 
+[![CI](https://github.com/quixio/quixlakehouse-datasource/actions/workflows/ci.yml/badge.svg)](https://github.com/quixio/quixlakehouse-datasource/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/quixio/quixlakehouse-datasource?sort=semver)](https://github.com/quixio/quixlakehouse-datasource/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 A first-party Grafana data source plugin that queries the **Quix Lakehouse** over the
 **REST API** (`POST /query`, Arrow IPC). It has a Go backend, so queries run inside
 grafana-server: dashboards, Explore, a working server-side "Save & test", and **alert
 rules** on lakehouse data.
 
+Build a query without writing SQL — tables, partition columns and their values all come
+from the catalog, so the dropdowns fill in under a second where a `SELECT DISTINCT` on
+the same column would not return at all:
+
+![Visual query builder](src/img/query-builder.png)
+
+`split by` turns a tag into one series per value, named after the tag:
+
+![Multi-series panel](src/img/dashboard.png)
+
 - Plugin id: `quix-quixlakehouse-datasource`
 - Backend binary: `gpx_quixlakehouse`
 - Transport: HTTP `POST {url}/query?format=arrow` (SQL as a `text/plain` body)
-- Status: **spike** — raw SQL only. See [ARCHITECTURE.md](ARCHITECTURE.md) §8 for the gap list.
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) · Changes: [CHANGELOG.md](CHANGELOG.md)
+- Known gaps: [ARCHITECTURE.md](ARCHITECTURE.md) §8, and "Known limitations" below.
 
 > An earlier revision of this plugin used Arrow Flight SQL. It was retargeted to REST
 > because `quix-ts-datalake-flight` is a translation layer over this same API (an extra

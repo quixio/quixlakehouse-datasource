@@ -1,94 +1,108 @@
 # Changelog
 
-## 0.0.6 - unreleased
+All notable changes to this plugin are documented here. Versions follow
+[semantic versioning](https://semver.org/); dates are the date the tag was cut.
 
-- WHERE now supports `AND`/`OR` with bracketed groups, so predicates like
-  `(a AND b) OR (c AND d)` can be built without dropping to Code mode. Nesting is shown
-  with indentation and a left rule, and an `OR` at the top level is always bracketed so
-  `$__timeFilter` keeps bounding every branch. (sc-74551)
-- Brackets can be put around any row, including the first. The control wraps a condition
-  in place rather than appending a new group, so `(a OR b) AND c` is reachable from the
-  builder instead of only from Code mode. (sc-74551)
-- Fixed: a `split by` query still drew a single plot with "value" in the legend. Grouping
-  by a tag returns a LONG frame (time, tag, value) which Grafana cannot split on its own,
-  and the backend was declaring every frame `timeseries-wide` regardless — announcing the
-  long frame as something it was not, so the tag column was ignored. Long frames are now
-  pivoted with `data.LongToWide`, giving one series per combination of split-column values,
-  each labelled and named after its tag values. (sc-74547)
-- Value dropdowns narrow only by conditions guaranteed to hold alongside the row being
-  edited: `AND` siblings do, anything under an `OR` does not.
-- WHERE values are narrowed by the filters already set, whatever order the rows were
-  added in and wherever the columns sit in the partition spec. The catalog intersects
-  constraints in any direction, so restricting this to ancestors silently disabled
-  narrowing on every column that was not the deepest. (sc-74547)
+Pre-1.0 deliberately: alerting works but is not yet demonstrated end to end with a
+provisioned rule, and `maxDataPoints` is not pushed down.
 
-- Fixed: "split by" grouped a column without selecting it, so the frame had nothing to
-  split series on. One line zig-zagged between groups, with no per-series legend or
-  colour. Split columns are now selected as dimensions. (sc-74547)
-- LIMIT no longer defaults to 1000. An empty field emits no LIMIT clause, so a query is
-  unbounded unless you cap it. The old default truncated silently. (sc-74547)
+## 0.0.7 - unreleased
 
-## 0.0.5 - unreleased
+### Documentation
 
-- Relative time mode: the anchor is now "Run starts at", a positive epoch-millisecond
-  instant, with a read-only line showing where the data will appear. Switching the mode
-  on anchors the run so it ends at the present, so an ordinary Last 6 hours shows it.
-- Fixed: the origin was not applied to timestamp columns, so relative mode silently did
-  nothing as soon as GROUP BY time was enabled and every bucket stayed at 1970.
-- Table columns offered in SELECT and TIME COLUMN from /schema, with
-  __index_level_0__ and __key filtered out. Partition columns preloaded into WHERE.
-- Fixed: builder dropdowns were bound to bare values, so the GROUP BY interval,
-  ORDER BY, aggregate and operator changes never reached the query.
-- Expressions accepted where a column is expected, for tables whose instant is split
-  across two columns.
+- Screenshots of the query builder and a multi-series panel, shown on the plugin
+  catalog listing.
+- `CONTRIBUTING.md`, and a README that opens with what the plugin does and what it
+  looks like.
 
-## 0.0.3 - unreleased
+## 0.0.6 - 2026-08-14
 
-- Relative time mode: switching it on anchors the run's last sample at the current
-  clock, so it shows in an ordinary "Last 6 hours" with no 1970 range to set up.
-  Zero at stays editable, with Detect (zero at the start) and End at now.
-- The origin is rescaled when the epoch unit changes; previously a millisecond origin
-  read as seconds landed ~56,000 years out and the panel went blank.
-- Builder dropdowns bind to option objects, fixing an interval change that never
-  reached the query.
+### Features
 
-## 0.0.2 - unreleased
+- **`AND`/`OR` with bracketed groups in WHERE.** Predicates like
+  `(a AND b) OR (c AND d)` can be built visually instead of dropping to Code mode.
+  Nesting is shown with indentation and a left rule. An `OR` at the top level is always
+  bracketed, so `$__timeFilter` keeps bounding every branch — without that,
+  `$__timeFilter(t) AND a OR b` binds as `($__timeFilter(t) AND a) OR b` and the
+  right-hand branch scans the whole table.
+  ([#3](https://github.com/quixio/quixlakehouse-datasource/pull/3))
+- Brackets can be put around any row, including the first. The control wraps a
+  condition in place rather than appending a new group, so `(a OR b) AND c` is
+  reachable from the builder.
+- WHERE value dropdowns narrow by the filters already set, in any direction and in any
+  order. The catalog intersects partition constraints regardless of their position in
+  the partition spec, so the previous ancestors-only rule silently disabled narrowing
+  on every column that was not the deepest.
+- Narrowing respects the logic: only conditions guaranteed to hold alongside a row are
+  used, so `AND` siblings narrow it and anything under an `OR` does not.
 
-- Visual query builder with a Builder/Code toggle, modelled on Grafana's InfluxQL
+### Bug fixes
+
+- **`split by` drew one line instead of one series per tag.** Two causes: the builder
+  grouped a column without selecting it, and the backend then declared every frame
+  `timeseries-wide` even when it was long, so Grafana ignored the tag column. Long
+  frames are now pivoted with `data.LongToWide`, giving one series per combination of
+  split-column values, each named after its tag values.
+- `LIMIT` no longer defaults to 1000. The old default truncated silently — a
+  60-second recording looked one second long. An empty field emits no `LIMIT` clause.
+- Removing a bracketed group's last condition left an unremovable empty group on
+  screen.
+- Removing a WHERE row handed its loaded value list to the row that moved up into its
+  place.
+
+## 0.0.5 - 2026-08-11
+
+Includes the work previously listed under 0.0.2 and 0.0.3, which were development
+builds and were never published.
+
+### Features
+
+- **Visual query builder** with a Builder/Code toggle, modelled on Grafana's InfluxQL
   editor. `GROUP BY time` defaults to `$__interval`, so buckets follow dashboard zoom.
   The builder generates `rawSql`, so builder-authored queries still evaluate in alert
   rules, which have no frontend.
-- WHERE rows populate from catalog metadata: partition columns from
-  `/partition-info`, values from `/partition-values`. Both are served through a
-  backend resource handler, since the API token never reaches the browser.
+  ([#2](https://github.com/quixio/quixlakehouse-datasource/pull/2))
+- WHERE rows populate from catalog metadata: partition columns from `/partition-info`,
+  values from `/partition-values`, both served through a backend resource handler since
+  the API token never reaches the browser.
+- SELECT and TIME COLUMN offer real table columns from `/schema`, with
+  `__index_level_0__` and `__key` filtered out.
+- **Relative time mode**, for recordings with no meaningful wall-clock date. The anchor
+  is "Run starts at", a positive epoch-millisecond instant, with a read-only line
+  showing where the data will appear. Switching it on anchors the run so it ends at the
+  present, so an ordinary Last 6 hours shows it.
+- Expressions accepted where a column is expected, for tables whose instant is split
+  across two columns.
 - Dashboard variables via `partition_values(table, column, year=2023)`.
+
+### Bug fixes
+
+- The origin was not applied to timestamp columns, so relative mode silently did
+  nothing as soon as GROUP BY time was enabled and every bucket stayed at 1970.
+- The origin is rescaled when the epoch unit changes. A millisecond origin read as
+  seconds landed ~56,000 years out and the panel went blank.
+- Builder dropdowns were bound to bare values rather than option objects, so changes to
+  the GROUP BY interval, ORDER BY, aggregate and operator never reached the query.
 
 ## 0.0.1 - 2026-08-07
 
-First tagged release. Pre-1.0 deliberately: alerting is not yet demonstrated end to
-end, and the plugin has had one day of testing against a real lakehouse.
+First tagged release.
 
-- Go-backend data source serving `POST /api/ds/query`, which is what a frontend-only
-  datasource answers with `plugin.unavailable`. Verified against the live lakehouse:
-  server-side health returns OK and queries return typed data frames with a real
-  Grafana time field.
+### Features
+
+- Go-backend data source serving `POST /api/ds/query` — the call a frontend-only
+  datasource answers with `plugin.unavailable`, and therefore what makes alert rules,
+  recorded queries and public dashboards possible on lakehouse data.
 - Raw SQL editor with backend-expanded macros — `$__timeFilter`, `$__timeFrom`,
   `$__timeTo`, `$__timeGroup` — so they behave identically in a dashboard and in an
   alert rule, which has no frontend to interpolate anything.
-- Explicit time handling: `timeColumn` selects the column promoted to the frame's
-  time field, `timeFormat` says how it is stored (epoch ms by default, matching the
-  sink).
-- Arrow IPC transport with a CSV fallback used only to disambiguate an empty
-  response, since Arrow has no in-stream error channel and an empty body would
-  otherwise be indistinguishable from a mid-stream failure.
+- Explicit time handling: `timeColumn` selects the column promoted to the frame's time
+  field, `timeFormat` says how it is stored (epoch ms by default, matching the sink).
+- Arrow IPC transport, with a CSV fallback used only to disambiguate an empty response:
+  Arrow has no in-stream error channel, so an empty body is otherwise indistinguishable
+  from a mid-stream failure.
 - Dashboard variables from partition metadata via
-  `partition_values(table, column, year=2023)`, served by a backend resource handler.
-  Answers from the catalog manifest in well under a second where the equivalent
-  `SELECT DISTINCT` does not complete at all.
+  `partition_values(table, column, year=2023)`. Answers from the catalog manifest in
+  well under a second, where the equivalent `SELECT DISTINCT` does not complete at all.
 - Deployable Grafana image with the plugin baked in, published to
   `ghcr.io/quixio/quixlakehouse-grafana`.
-
-Known gaps: no visual query builder, no provisioned-alert-rule proof, no `/partitions`
-fallback for catalogs predating `/partition-values`, `maxDataPoints` is not pushed
-down, and the plugin is unsigned so self-hosted Grafana needs
-`GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS`.
