@@ -6,7 +6,17 @@ All notable changes to this plugin are documented here. Versions follow
 Pre-1.0 deliberately: alerting works but is not yet demonstrated end to end with a
 provisioned rule, and `maxDataPoints` is not pushed down.
 
-## 0.0.7 - unreleased
+## 0.0.8 - unreleased
+
+### Changed
+
+- The plugin logo is now the Quix icon mark. It was still the `@grafana/create-plugin`
+  placeholder, which used Grafana's own brand palette — misleading on a third-party
+  plugin, and the catalog listing renders it beside the plugin name. The fill follows
+  `prefers-color-scheme`, because `plugin.json` has no theme-specific logo slots and each
+  mono variant is invisible against its own colour. (sc-74602)
+
+## 0.0.7 - 2026-08-17
 
 ### Documentation
 
