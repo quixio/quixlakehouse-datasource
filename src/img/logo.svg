@@ -3,21 +3,31 @@
   Quix icon mark, 2025. Geometry is the official asset ("Quix icon logo 2025 (mono)")
   unchanged; only the fill is parameterised.
 
-  WHY THE MEDIA QUERY: plugin.json has exactly one logo pair (small/large) and no
-  theme variants, so a single file has to read on both a light and a dark background.
-  The brand ships two mono variants and each is invisible against its own colour --
-  white on grafana.com's light catalog page, navy on Grafana's default dark theme.
+  Note for editors: XML forbids a double hyphen inside a comment, and an invalid SVG
+  renders as a broken-image icon in Grafana with nothing in the logs to say why. Keep
+  prose here free of them.
 
-  The base fill is the DARK navy deliberately: if a renderer ignores
+  WHY THE MEDIA QUERY: plugin.json has exactly one logo pair (small and large) and no
+  theme variants, so a single file has to read on both a light and a dark background.
+  The brand ships two mono variants and each is invisible against its own colour: white
+  on grafana.com's light catalog page, navy on Grafana's default dark theme.
+
+  The base fill is the DARK navy deliberately. If a renderer ignores
   prefers-color-scheme, the fallback is the variant that still shows on the catalog
   listing, which is the most public place this appears.
 
-  Note prefers-color-scheme follows the OS setting, not Grafana's own theme toggle, so
-  a light-theme Grafana on a dark-mode machine still gets the white mark. The
-  alternative is the mark on a filled navy tile, which is unconditional but changes the
-  asset.
+  Caveat: prefers-color-scheme follows the OS setting, not Grafana's own theme toggle,
+  so a light-theme Grafana on a dark-mode machine still gets the white mark. The
+  unconditional alternative is the mark on a filled navy tile, which changes the asset
+  rather than just its colour.
 -->
-<svg id="Layer_2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 132 132">
+<!--
+  width/height as well as viewBox: without them an <img> gives the SVG no intrinsic size
+  and the browser falls back to 150x150, so the art is scaled by an arbitrary factor
+  before Grafana's own CSS box takes over. Measured in the browser: 150x150 without,
+  132x132 with.
+-->
+<svg id="Layer_2" xmlns="http://www.w3.org/2000/svg" width="132" height="132" viewBox="0 0 132 132">
   <style>
     .quix-mark { fill: #0a0b24; }
     @media (prefers-color-scheme: dark) {
