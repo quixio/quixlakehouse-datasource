@@ -1,1 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 81.9 71.52"><defs><style>.cls-1{fill:#84aff1;}.cls-2{fill:#3865ab;}.cls-3{fill:url(#linear-gradient);}</style><linearGradient id="linear-gradient" x1="42.95" y1="16.88" x2="81.9" y2="16.88" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f2cc0c"/><stop offset="1" stop-color="#ff9830"/></linearGradient></defs><g id="Layer_2" data-name="Layer 2"><g id="Layer_1-2" data-name="Layer 1"><path class="cls-1" d="M55.46,62.43A2,2,0,0,1,54.07,59l4.72-4.54a2,2,0,0,1,2.2-.39l3.65,1.63,3.68-3.64a2,2,0,1,1,2.81,2.84l-4.64,4.6a2,2,0,0,1-2.22.41L60.6,58.26l-3.76,3.61A2,2,0,0,1,55.46,62.43Z"/><path class="cls-2" d="M37,0H2A2,2,0,0,0,0,2V31.76a2,2,0,0,0,2,2H37a2,2,0,0,0,2-2V2A2,2,0,0,0,37,0ZM4,29.76V8.84H35V29.76Z"/><path class="cls-3" d="M79.9,0H45a2,2,0,0,0-2,2V31.76a2,2,0,0,0,2,2h35a2,2,0,0,0,2-2V2A2,2,0,0,0,79.9,0ZM47,29.76V8.84h31V29.76Z"/><path class="cls-2" d="M37,37.76H2a2,2,0,0,0-2,2V69.52a2,2,0,0,0,2,2H37a2,2,0,0,0,2-2V39.76A2,2,0,0,0,37,37.76ZM4,67.52V46.6H35V67.52Z"/><path class="cls-2" d="M79.9,37.76H45a2,2,0,0,0-2,2V69.52a2,2,0,0,0,2,2h35a2,2,0,0,0,2-2V39.76A2,2,0,0,0,79.9,37.76ZM47,67.52V46.6h31V67.52Z"/><rect class="cls-1" x="10.48" y="56.95" width="4" height="5.79"/><rect class="cls-1" x="17.43" y="53.95" width="4" height="8.79"/><rect class="cls-1" x="24.47" y="50.95" width="4" height="11.79"/><path class="cls-1" d="M19.47,25.8a6.93,6.93,0,1,1,6.93-6.92A6.93,6.93,0,0,1,19.47,25.8Zm0-9.85a2.93,2.93,0,1,0,2.93,2.93A2.93,2.93,0,0,0,19.47,16Z"/></g></g></svg>
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Quix icon mark, 2025. Geometry is the official asset ("Quix icon logo 2025 (mono)")
+  unchanged; only the fill is parameterised.
+
+  Note for editors: XML forbids a double hyphen inside a comment, and an invalid SVG
+  renders as a broken-image icon in Grafana with nothing in the logs to say why. Keep
+  prose here free of them.
+
+  WHY THE MEDIA QUERY: plugin.json has exactly one logo pair (small and large) and no
+  theme variants, so a single file has to read on both a light and a dark background.
+  The brand ships two mono variants and each is invisible against its own colour: white
+  on grafana.com's light catalog page, navy on Grafana's default dark theme.
+
+  The base fill is the DARK navy deliberately. If a renderer ignores
+  prefers-color-scheme, the fallback is the variant that still shows on the catalog
+  listing, which is the most public place this appears.
+
+  Caveat: prefers-color-scheme follows the OS setting, not Grafana's own theme toggle,
+  so a light-theme Grafana on a dark-mode machine still gets the white mark. The
+  unconditional alternative is the mark on a filled navy tile, which changes the asset
+  rather than just its colour.
+-->
+<!--
+  width/height as well as viewBox: without them an <img> gives the SVG no intrinsic size
+  and the browser falls back to 150x150, so the art is scaled by an arbitrary factor
+  before Grafana's own CSS box takes over. Measured in the browser: 150x150 without,
+  132x132 with.
+-->
+<svg id="Layer_2" xmlns="http://www.w3.org/2000/svg" width="132" height="132" viewBox="0 0 132 132">
+  <style>
+    .quix-mark { fill: #0a0b24; }
+    @media (prefers-color-scheme: dark) {
+      .quix-mark { fill: #ffffff; }
+    }
+  </style>
+  <g id="Layer_1-2">
+    <rect class="quix-mark" x="108" y="108" width="24" height="24" rx="2.5" ry="2.5" stroke-width="0"/>
+    <rect class="quix-mark" x="81" y="81" width="24" height="24" rx="2.5" ry="2.5" stroke-width="0"/>
+    <rect class="quix-mark" x="54" y="54" width="24" height="24" rx="2.5" ry="2.5" stroke-width="0"/>
+    <path class="quix-mark" d="M129.5,0H2.5C1.12,0,0,1.12,0,2.5v127c0,1.38,1.12,2.5,2.5,2.5h73c1.38,0,2.5-1.12,2.5-2.5v-19c0-1.38-1.12-2.5-2.5-2.5H24V24h84v51.5c0,1.38,1.12,2.5,2.5,2.5h19c1.38,0,2.5-1.12,2.5-2.5V2.5c0-1.38-1.12-2.5-2.5-2.5Z" stroke-width="0"/>
+  </g>
+</svg>
