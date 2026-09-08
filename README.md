@@ -325,7 +325,10 @@ src/
   components/ConfigEditor.tsx, QueryEditor.tsx
 provisioning/datasources/quixlakehouse.yml   dev stack, uid quixlake-rest
 deploy/                   deployable image: Dockerfile, entrypoint, provisioning template
-.github/workflows/        ci.yml (lint/test/build) + publish-image.yml (GHCR)
+.github/workflows/        ci.yml (lint/test/build)
+                          plugin-validator.yml (Grafana's plugin validator, weekly too)
+                          release.yml (installable zip on a v* tag)
+                          publish-image.yml (GHCR)
 docker-compose.dev.yml
 .env                      PLUGIN_ID / GRAFANA_PORT / GRAFANA_VERSION
                           NOT tracked -- gitignored, it holds live tokens

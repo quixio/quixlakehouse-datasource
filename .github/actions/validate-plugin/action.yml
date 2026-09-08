@@ -1,0 +1,98 @@
+# Runs Grafana's own plugin validator (grafana/plugin-validator-cli) over a packaged
+# archive PLUS the source tree, and fails the job on any error-severity finding.
+#
+# Why this gate exists: the 2026-09-07 catalog submission came back "Plugin checks
+# Result: Failed" on three analyzers we had no local signal for --
+#   * sdkusage      go-sdk-older-than-5-months (the pinned grafana-plugin-sdk-go)
+#   * osvscanner    HIGH-severity CVEs in go.mod (grpc) and package-lock.json
+#                   (fast-uri x4, nanoid)
+#   * govulncheck   stdlib findings from an EOL Go toolchain
+# All three are source-code analyzers: without -sourceCodeUri they SILENTLY SKIP. That
+# is why an earlier local `plugincheck2 <zip>` run reported 0 errors while Grafana's run
+# of the same tool on the same zip failed. Handing the validator source code is the
+# entire point of this action; do not drop the flag to make CI quieter.
+#
+# GITHUB_TOKEN is mandatory, not a nicety. sdkusage asks the GitHub API for the release
+# date of the pinned SDK version, and on an API error it logs at debug level and reports
+# nothing -- an unauthenticated runner hits the anonymous rate limit and the SDK-age
+# check turns into a false green. The token buys the authenticated quota.
+#
+# We deliberately track `latest` with --pull=always. Grafana runs whatever is current at
+# submission time, so pinning a tag here would make CI green against a validator nobody
+# else uses; a new analyzer that fails us here would have failed the submission too. The
+# cost is that this workflow can go red without a commit, which is also why it runs on a
+# schedule.
+#
+# -strict is deliberately NOT used: it makes warnings fatal, and `unsigned-plugin` is an
+# expected, unavoidable warning until Grafana Labs signs us. Rules we do want fatal are
+# escalated individually in .github/plugin-validator.yaml.
+#
+# One class of failure is not reproducible here: Grafana's report also carried
+# `govulncheck-scan-failed`, caused by the Go toolchain on THEIR host being newer than
+# the one our module targets. That is a property of their runner, not of this archive,
+# so a green run of this action does not guarantee that specific line disappears.
+
+name: Validate plugin
+description: >-
+  Runs grafana/plugin-validator-cli against a packaged plugin zip with the repository
+  checkout supplied as source code. Non-zero exit on any error-severity finding.
+
+inputs:
+  zip:
+    description: Path to the packaged plugin archive, relative to the workspace root.
+    required: true
+  config:
+    description: Path to the validator config YAML, relative to the workspace root.
+    required: false
+    default: .github/plugin-validator.yaml
+
+runs:
+  using: composite
+  steps:
+    # A clean copy of the checkout is what Grafana sees when it clones the repo, so that
+    # is what the validator should analyse. Excluding node_modules and dist keeps semgrep
+    # and gosec off vendored third-party code (minutes of runtime and findings we do not
+    # own), and excluding the build outputs keeps the source tree from containing the very
+    # archive being validated. package.json travels with it, so the packagejson analyzer
+    # compares like with like -- see the version note in ../package-plugin/action.yml.
+    - name: Stage source tree for the validator
+      shell: bash
+      run: |
+        set -euo pipefail
+        SRC="$RUNNER_TEMP/plugin-source"
+        rm -rf "$SRC"
+        mkdir -p "$SRC"
+        rsync -a \
+          --exclude=.git \
+          --exclude=node_modules \
+          --exclude=dist \
+          --exclude=pkg-root \
+          --exclude='*.zip' \
+          --exclude='*.sha1' \
+          ./ "$SRC/"
+        echo "staged source at $SRC"
+
+    - name: Run plugin validator
+      shell: bash
+      env:
+        ZIP: ${{ inputs.zip }}
+        CONFIG: ${{ inputs.config }}
+        # Read by the sdkusage analyzer's GitHub API client. See the header.
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        SRC="$RUNNER_TEMP/plugin-source"
+        # No `|| true` and no continue-on-error anywhere in this step: a non-zero exit
+        # from plugincheck2 means at least one error-severity diagnostic, and that is
+        # precisely the state a catalog submission rejects.
+        #
+        # SKIP_LLM_* switch off the two analyzers that need a paid model API key; they
+        # would otherwise fail to configure. SKIP_OSV_SCANNER exists too -- never set it,
+        # it disables one of the three checks this gate was built for.
+        docker run --rm --pull=always \
+          -v "$GITHUB_WORKSPACE/${ZIP}:/archive.zip:ro" \
+          -v "$SRC:/source_code" \
+          -v "$GITHUB_WORKSPACE/${CONFIG}:/config.yaml:ro" \
+          -e GITHUB_TOKEN -e SKIP_LLM_REVIEW=1 -e SKIP_LLM_CODEDIFF=1 \
+          grafana/plugin-validator-cli:latest \
+          -config /config.yaml -sourceCodeUri file:///source_code -ghaOutput /archive.zip

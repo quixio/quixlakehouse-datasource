@@ -1,0 +1,91 @@
+# Runs Grafana's plugin validator against a freshly packaged archive. This is the same
+# gate a Grafana catalog submission faces, run in our own repo so we find out on a PR
+# rather than in a reviewer's rejection email -- which is how the 2026-09-07 "Plugin
+# checks Result: Failed" arrived.
+#
+# Separate from ci.yml on purpose. This workflow has its own trigger set (a weekly
+# schedule, no feature-branch pushes) and a full cross-platform build plus a container
+# pull takes minutes; folding it into ci.yml would re-run lint, typecheck and both test
+# suites every Monday morning for nothing.
+#
+# Why a schedule: the two rules most likely to fail us change on the calendar, not on our
+# commits. `go-sdk-older-than-5-months` flips purely with the passage of time, and
+# osv-scanner/govulncheck advisories land against dependencies we never touched. A repo
+# that is quiet for a month can go from green to submission-blocking with no diff.
+# Caveat: GitHub disables scheduled workflows after 60 days without repository activity,
+# so on a dormant repo run this manually (workflow_dispatch) before relying on it.
+#
+# Not on feature/** pushes, unlike ci.yml: every run is a full frontend + all-platform
+# backend build followed by the validator container, and pull requests to main already
+# cover the branch before it can merge.
+#
+# NOT yet a required status check. The repo ruleset requires one approving review but no
+# status checks, so this job going red does not block a merge. To make it blocking:
+# Settings -> Rules -> the "PR merge" ruleset -> "Require status checks to pass" -> add
+# `validate`. Worth doing once the dependency-bump PR has made it green; making it
+# required while it is red locks the repo.
+
+name: plugin-validator
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-validator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    # The validator pulls a container, runs semgrep, gosec, govulncheck and a ClamAV
+    # sweep; the default 6h timeout would let a wedged run burn a whole runner day.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # No `version` input, deliberately. The validator's packagejson analyzer compares
+      # the archive's plugin.json against package.json in the source tree we hand it, and
+      # both must read the checkout's own version. Stamping one here would manufacture a
+      # packagecode-version-mismatch error that only exists in CI.
+      - name: Package plugin
+        id: pkg
+        uses: ./.github/actions/package-plugin
+        with:
+          plugin-id: quix-quixlakehouse-datasource
+
+      # Uploaded BEFORE validation on purpose: a zip that fails the gate is exactly the
+      # one worth downloading and re-running the validator against locally.
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.zip }}
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            ${{ steps.pkg.outputs.sha1 }}
+          retention-days: 7
+
+      - name: Validate plugin
+        uses: ./.github/actions/validate-plugin
+        with:
+          zip: ${{ steps.pkg.outputs.zip }}
