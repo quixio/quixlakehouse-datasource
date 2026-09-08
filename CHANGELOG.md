@@ -6,7 +6,30 @@ All notable changes to this plugin are documented here. Versions follow
 Pre-1.0 deliberately: alerting works but is not yet demonstrated end to end with a
 provisioned rule, and `maxDataPoints` is not pushed down.
 
-## 0.0.8 - unreleased
+## 0.0.9 - unreleased
+
+### Changed
+
+- **Dependency and toolchain bump answering Grafana's 2026-09-07 catalog validation.**
+  The report failed us on SDK age and on published advisories, none of which the plugin
+  itself triggers, so nothing here changes its behaviour. Grafana Go SDK v0.285.0 →
+  v0.296.4 (the `go-sdk-older-than-5-months` rule); `google.golang.org/grpc` → v1.83.2
+  for CVE-2026-84304; Go 1.25.5 → 1.26.8, because Go 1.25 is end of life and
+  govulncheck found 35 standard-library findings in the binary we ship, plus
+  `golang.org/x/net` GO-2026-5942 and `golang.org/x/text` GO-2026-5970. On the frontend
+  the `@grafana/*` packages move 13.1.0 → 13.1.5, which relaxes their pins on
+  `react-use` and `dompurify` from exact to caret and so lets the js-cookie
+  (GHSA-qjx8-664m-686j) and dompurify advisories be lifted; `fast-uri`
+  (CVE-2026-75931, -75975, -75899, -76172) and `nanoid` (CVE-2026-67213) are build-only
+  dependencies and move too. 13.2.1 was the intended target but requires React 19, and
+  this plugin is on React 18 — that migration is its own change. (sc-74412)
+- Grafana's own plugin validator now runs in CI with the source tree attached, on pull
+  requests, on release tags before the zip is published, and weekly. It is the same
+  gate a catalog submission faces, and its SDK-age and vulnerability rules fail on the
+  calendar rather than on anything a commit did — which is exactly how the findings
+  above reached us from Grafana instead of from CI. See `CONTRIBUTING.md`. (sc-74412)
+
+## 0.0.8 - 2026-09-07
 
 ### Changed
 

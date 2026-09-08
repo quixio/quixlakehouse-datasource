@@ -38,7 +38,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GF_INSTALL_PLUGINS: "https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.0.5/quix-quixlakehouse-datasource-0.0.5.zip;quix-quixlakehouse-datasource"
+      GF_INSTALL_PLUGINS: "https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.0.9/quix-quixlakehouse-datasource-0.0.9.zip;quix-quixlakehouse-datasource"
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "quix-quixlakehouse-datasource"
 ```
 
@@ -56,7 +56,7 @@ environment use route 2 or 3.
 For a Grafana you administer directly:
 
 ```bash
-grafana-cli --pluginUrl https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.0.5/quix-quixlakehouse-datasource-0.0.5.zip \
+grafana-cli --pluginUrl https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.0.9/quix-quixlakehouse-datasource-0.0.9.zip \
   plugins install quix-quixlakehouse-datasource
 
 sudo systemctl restart grafana-server

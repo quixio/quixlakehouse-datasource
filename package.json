@@ -1,6 +1,6 @@
 {
   "name": "quixlakehouse",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "scripts": {
     "build": "webpack -c ./.config/webpack/webpack.config.ts --env production",
     "dev": "webpack -w -c ./.config/webpack/webpack.config.ts --env development",
@@ -68,11 +68,11 @@
   },
   "dependencies": {
     "@emotion/css": "11.10.6",
-    "@grafana/data": "13.1.0",
-    "@grafana/i18n": "13.1.0",
-    "@grafana/runtime": "13.1.0",
-    "@grafana/ui": "13.1.0",
-    "@grafana/schema": "13.1.0",
+    "@grafana/data": "13.1.5",
+    "@grafana/i18n": "13.1.5",
+    "@grafana/runtime": "13.1.5",
+    "@grafana/schema": "13.1.5",
+    "@grafana/ui": "13.1.5",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
   },

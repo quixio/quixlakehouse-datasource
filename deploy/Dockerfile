@@ -25,7 +25,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # The plugin binary name comes from `executable` in src/plugin.json; the SDK's mage
 # targets read it, so it is not duplicated here.
-FROM golang:1.25-alpine AS backend
+FROM golang:1.26-alpine AS backend
 RUN apk add --no-cache git
 WORKDIR /build
 COPY go.mod go.sum ./
