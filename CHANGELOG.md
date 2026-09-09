@@ -20,8 +20,9 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   the `@grafana/*` packages move 13.1.0 → 13.1.5, which relaxes their pins on
   `react-use` and `dompurify` from exact to caret and so lets the js-cookie
   (GHSA-qjx8-664m-686j) and dompurify advisories be lifted; `fast-uri`
-  (CVE-2026-75931, -75975, -75899, -76172) and `nanoid` (CVE-2026-67213) are build-only
-  dependencies and move too. 13.2.1 was the intended target but requires React 19, and
+  (CVE-2026-75931, -75975, -75899, -76172), `nanoid` (CVE-2026-67213) and `js-yaml`
+  (CVE-2026-84375) are build-only dependencies and move too. 13.2.1 was the intended
+  target but requires React 19, and
   this plugin is on React 18 — that migration is its own change. (sc-74412)
 - Grafana's own plugin validator now runs in CI with the source tree attached, on pull
   requests, on release tags before the zip is published, and weekly. It is the same
