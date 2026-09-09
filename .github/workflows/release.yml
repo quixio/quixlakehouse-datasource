@@ -1,14 +1,28 @@
-# Packages the plugin as a Grafana-installable zip and attaches it to a GitHub Release.
+# Packages the plugin as a Grafana-installable zip, validates it, and attaches it to a
+# GitHub Release.
 #
 # This is what makes the plugin installable by anyone who is NOT deploying our Grafana
 # image -- i.e. `GF_INSTALL_PLUGINS=<url>;quix-quixlakehouse-datasource`, or unzipping
 # into /var/lib/grafana/plugins. It is also the artefact a Grafana catalog submission
-# points at.
+# points at, which is why the validator runs here and not only on PRs: a tag must never
+# publish an archive the catalog would reject.
 #
-# THE LAYOUT IS THE WHOLE JOB. Grafana discovers a plugin by directory name, which must
-# equal the plugin id. Zipping `dist/` produces an archive containing a folder called
-# "dist", which Grafana silently ignores -- the plugin simply never appears, with no
-# error to explain why. So we rename to the plugin id before zipping.
+# WHY TWO JOBS. Everything except the final upload is read-only work, and the validator
+# hands its GitHub token to grafana/plugin-validator-cli:latest -- a third-party image on
+# a mutable tag, re-pulled on every run. A single job with `contents: write` would put a
+# token that can push commits and cut releases inside that container. So `package` runs
+# under the workflow's `contents: read` and `attach` is the only job that asks for write,
+# with no container and no third-party action in it. The zip crosses between them as a
+# build artefact, not as a shared filesystem.
+#
+# Ordering inside `package` is also deliberate: the artefact is uploaded BEFORE validation
+# so a rejected zip can still be downloaded and inspected, and the release is attached
+# only AFTER validation passes.
+#
+# The build and packaging steps live in .github/actions/package-plugin, shared with
+# .github/workflows/plugin-validator.yml so both produce the same archive. The reason the
+# archive is laid out the way it is ("THE LAYOUT IS THE WHOLE JOB") is documented in that
+# action's header -- read it before changing anything about the zip.
 #
 # Alternative worth knowing: grafana/plugin-actions/build-plugin does this and signing in
 # one step. Prefer it once we actually want a signature; until then this is fewer moving
@@ -24,7 +38,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   PLUGIN_ID: quix-quixlakehouse-datasource
@@ -32,6 +46,13 @@ env:
 jobs:
   package:
     runs-on: ubuntu-latest
+    # The validator pulls a container, runs semgrep, gosec, govulncheck and a ClamAV
+    # sweep; the default 6h timeout would let a wedged run burn a whole runner day.
+    # Matches the equivalent job in plugin-validator.yml.
+    timeout-minutes: 30
+    outputs:
+      zip: ${{ steps.pkg.outputs.zip }}
+      sha1: ${{ steps.pkg.outputs.sha1 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,82 +79,67 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Packaging version $VERSION"
 
-      - name: Build frontend
-        run: |
-          npm ci --no-audit --no-fund
-          # The tag is the single source of truth for the version. webpack substitutes
-          # %VERSION% in plugin.json from package.json (.config/webpack/webpack.config.ts:27),
-          # so without this the zip is named from the tag while plugin.json carries
-          # whatever package.json happened to say. Grafana reads plugin.json, and the
-          # plugin validator rejects the mismatch at catalog submission -- v0.0.1 shipped
-          # with exactly that defect before this step existed.
-          npm version "${{ steps.v.outputs.version }}" --no-git-tag-version --allow-same-version
-          npm run build
-
-      # Default mage target is build.BuildAll, which cross-compiles every platform.
-      # A single-platform zip would work on our own image and fail for anyone else.
-      - name: Build backend (all platforms)
-        run: |
-          go install github.com/magefile/mage@latest
-          mage -v
-
-      - name: Package
+      - name: Package plugin
         id: pkg
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.v.outputs.version }}"
-          OUT="${PLUGIN_ID}-${VERSION}.zip"
+        uses: ./.github/actions/package-plugin
+        with:
+          plugin-id: ${{ env.PLUGIN_ID }}
+          version: ${{ steps.v.outputs.version }}
 
-          # The exec bit is not preserved by every build path, and Grafana will not
-          # launch a backend it cannot execute -- the symptom is the plugin loading as
-          # frontend-only, with no error naming the cause.
-          chmod +x dist/gpx_* || true
-
-          mkdir -p pkg-root
-          cp -r dist "pkg-root/${PLUGIN_ID}"
-
-          # -r keeps the directory entry; zip preserves the exec bit on Linux.
-          ( cd pkg-root && zip -qr "../${OUT}" "${PLUGIN_ID}" )
-
-          # Standard two-column format, so `sha1sum -c` can verify it. Writing the
-          # bare hash produced a file no tool would read -- the catalog submission
-          # wants the value pasted in, which is still the first field here.
-          sha1sum "${OUT}" > "${OUT}.sha1"
-
-          echo "zip=${OUT}" >> "$GITHUB_OUTPUT"
-          echo "### Packaged" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          unzip -l "${OUT}" | head -20 >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      # Fail loudly here rather than shipping an archive that installs to nothing.
-      - name: Verify layout
-        run: |
-          set -euo pipefail
-          ZIP="${{ steps.pkg.outputs.zip }}"
-          unzip -l "$ZIP" | grep -q "${PLUGIN_ID}/plugin.json" \
-            || { echo "FATAL: ${PLUGIN_ID}/plugin.json missing -- wrong root directory"; exit 1; }
-          unzip -l "$ZIP" | grep -q "${PLUGIN_ID}/gpx_" \
-            || { echo "FATAL: no gpx_ backend binary -- plugin would load frontend-only"; exit 1; }
-          echo "layout OK"
-
+      # Uploaded BEFORE validation, deliberately: if the validator rejects the archive
+      # the run fails, and the artefact is then the only way to inspect what was actually
+      # built. Upload after validation and a red run leaves nothing behind. The `attach`
+      # job also downloads this artefact by name, so the name is load-bearing.
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.zip }}
           path: |
             ${{ steps.pkg.outputs.zip }}
-            ${{ steps.pkg.outputs.zip }}.sha1
+            ${{ steps.pkg.outputs.sha1 }}
+
+      # ...and validation runs BEFORE the release is attached, so a tag can never publish
+      # an archive that a Grafana catalog submission would reject. See the action header
+      # for what it checks and why it needs the source tree. The token it is given is this
+      # job's read-only one, on purpose -- the action's header explains why that matters.
+      - name: Validate plugin
+        uses: ./.github/actions/validate-plugin
+        with:
+          zip: ${{ steps.pkg.outputs.zip }}
+          github-token: ${{ github.token }}
+
+  # The only job with write access, and the only one that runs no container and no
+  # third-party action. It never rebuilds: it publishes the exact bytes `package` built
+  # and the validator passed.
+  attach:
+    needs: package
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      # No checkout: the artefact is all this job needs, and skipping the clone keeps the
+      # write token away from anything that executes repository code. download-artifact
+      # unpacks into the workspace root, so both files land there under their own names.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.zip }}
 
       - name: Attach to release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Without a checkout `gh` has no git remote to infer the repository from.
+          GH_REPO: ${{ github.repository }}
+          ZIP: ${{ needs.package.outputs.zip }}
+          SHA1: ${{ needs.package.outputs.sha1 }}
         run: |
+          set -euo pipefail
+          ls -l "${ZIP}" "${SHA1}"
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            "${{ steps.pkg.outputs.zip }}" \
-            "${{ steps.pkg.outputs.zip }}.sha1" \
+            "${ZIP}" \
+            "${SHA1}" \
           || gh release upload "${GITHUB_REF_NAME}" \
-            "${{ steps.pkg.outputs.zip }}" \
-            "${{ steps.pkg.outputs.zip }}.sha1" --clobber
+            "${ZIP}" \
+            "${SHA1}" --clobber

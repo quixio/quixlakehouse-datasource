@@ -1,0 +1,27 @@
+# Config for grafana/plugin-validator-cli, passed as -config by
+# .github/actions/validate-plugin.
+#
+# Scope: this file shapes OUR CI run only. Grafana enforces its own config when it
+# validates a catalog submission and never reads this one. Their shipped
+# config/pipeline.yaml is exactly the `global` block below with no analyzers section, so
+# that is where we start, and we change one rule.
+#
+# The one change: govulncheck-issue-found ships as a `warning`. We escalate it to
+# `error` because the 2026-09-07 submission report carried 35 stdlib vulnerabilities
+# behind that single warning (Go 1.25.5 toolchain, already EOL), and a warning nobody
+# reads is exactly how the Trivy job in .github/workflows/ci.yml became decorative.
+#
+# If an unfixable upstream finding ever wedges CI on this rule, lower it back to
+# `warning` HERE and record why in this comment. Do not silence it by deleting the
+# analyzers block, and do not reach for -analyzer filtering in the action.
+
+global:
+  enabled: true
+  jsonOutput: false
+  reportAll: false
+
+analyzers:
+  govulncheck:
+    rules:
+      govulncheck-issue-found:
+        severity: error

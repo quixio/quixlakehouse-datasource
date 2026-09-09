@@ -58,6 +58,12 @@ the SQL generator, so that is where the tests are concentrated.
 - The version in `package.json` is bumped **once per PR**, not per commit.
 - CI runs lint, typecheck, the Go and frontend test suites, and a Trivy scan. It must be
   green.
+- The `plugin-validator` workflow additionally packages the plugin and runs Grafana's own
+  plugin validator against the zip *with the source tree attached*, which is what enables
+  its SDK-age, osv-scanner (`go.mod`, `package-lock.json`) and govulncheck checks. It is
+  the same gate a Grafana catalog submission faces, so a red run here is a rejected
+  submission later. It also runs weekly, because those rules fail on the calendar — a new
+  CVE or an ageing SDK release — rather than on anything you changed.
 
 ## Licence
 

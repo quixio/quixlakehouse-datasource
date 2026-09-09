@@ -1,0 +1,117 @@
+# Runs Grafana's own plugin validator (grafana/plugin-validator-cli) over a packaged
+# archive PLUS the source tree, and fails the job on any error-severity finding.
+#
+# Why this gate exists: the 2026-09-07 catalog submission came back "Plugin checks
+# Result: Failed" on three analyzers we had no local signal for --
+#   * sdkusage      go-sdk-older-than-5-months (the pinned grafana-plugin-sdk-go)
+#   * osvscanner    HIGH-severity CVEs in go.mod (grpc) and package-lock.json
+#                   (fast-uri x4, nanoid)
+#   * govulncheck   stdlib findings from an EOL Go toolchain
+# All three are source-code analyzers: without -sourceCodeUri they SILENTLY SKIP. That
+# is why an earlier local `plugincheck2 <zip>` run reported 0 errors while Grafana's run
+# of the same tool on the same zip failed. Handing the validator source code is the
+# entire point of this action; do not drop the flag to make CI quieter.
+#
+# A GitHub token is mandatory, not a nicety. sdkusage asks the GitHub API for the release
+# date of the pinned SDK version, and on an API error it logs at debug level and reports
+# nothing -- an unauthenticated runner hits the anonymous rate limit and the SDK-age
+# check turns into a false green. The token buys the authenticated quota.
+#
+# It is an INPUT rather than `github.token` read inside this action, so the caller owns
+# its scope, and it must never be write-scoped. Every call the validator makes with it is
+# a read, while the thing receiving it is a third-party image on a mutable `latest` tag
+# that is re-pulled on every run: a `contents: write` token handed in here would let
+# whatever that tag resolves to push commits and cut releases in this repo. Call this
+# action only from a job whose permissions are `contents: read` -- see the two-job split
+# in ../../workflows/release.yml.
+#
+# We deliberately track `latest` with --pull=always. Grafana runs whatever is current at
+# submission time, so pinning a tag here would make CI green against a validator nobody
+# else uses; a new analyzer that fails us here would have failed the submission too. The
+# cost is that this workflow can go red without a commit, which is also why it runs on a
+# schedule.
+#
+# -strict is deliberately NOT used: it makes warnings fatal, and `unsigned-plugin` is an
+# expected, unavoidable warning until Grafana Labs signs us. Rules we do want fatal are
+# escalated individually in .github/plugin-validator.yaml.
+#
+# Go toolchain skew is only half-handled here. The image pins a Go PATCH (1.26.6 as of
+# 2026-09-08), so we run it with GOTOOLCHAIN=auto and `go list` fetches whatever patch
+# go.mod asks for. A newer MINOR in go.mod is not handled: govulncheck then dies with
+# "uses version go1.26 of the source-processing packages but runs version go1.27 of
+# `go list`", so do not outrun the image's `FROM golang:` minor. That same line in
+# Grafana's 2026-09-07 report came from Go 1.27 on THEIR host -- a property of their
+# runner, which a green run here can neither reproduce nor vouch for.
+
+name: Validate plugin
+description: >-
+  Runs grafana/plugin-validator-cli against a packaged plugin zip with the repository
+  checkout supplied as source code. Non-zero exit on any error-severity finding.
+
+inputs:
+  zip:
+    description: Path to the packaged plugin archive, relative to the workspace root.
+    required: true
+  github-token:
+    description: >-
+      Token for the validator's GitHub API calls (sdkusage). Read-only is enough; pass
+      the github.token of a job whose permissions are `contents: read`. Never pass a
+      write-scoped token -- it goes into a third-party container. See the header.
+    required: true
+  config:
+    description: Path to the validator config YAML, relative to the workspace root.
+    required: false
+    default: .github/plugin-validator.yaml
+
+runs:
+  using: composite
+  steps:
+    # What Grafana sees when it clones the repo is the tracked files, so that is exactly
+    # what the validator gets -- listed by `git ls-files`, copied at their working-copy
+    # contents so a version stamped into package.json by release.yml still travels (the
+    # packagejson analyzer needs that; see the version note in ../package-plugin/action.yml).
+    #
+    # Enumerating the tracked files, rather than copying everything minus an exclude list,
+    # is what makes this safe: untracked and ignored files -- .env, docs/internal/,
+    # node_modules/, dist/, the archive being validated -- cannot reach the container at
+    # all, whereas an exclude list is fail-open and would have to name every one of them.
+    # `git ls-files` needs the checkout's .git directory, which actions/checkout provides.
+    - name: Stage source tree for the validator
+      shell: bash
+      run: |
+        set -euo pipefail
+        SRC="$RUNNER_TEMP/plugin-source"
+        rm -rf "$SRC"
+        mkdir -p "$SRC"
+        git ls-files -z | rsync -a --files-from=- --from0 ./ "$SRC/"
+        echo "staged source at $SRC"
+
+    - name: Run plugin validator
+      shell: bash
+      env:
+        ZIP: ${{ inputs.zip }}
+        CONFIG: ${{ inputs.config }}
+        # Read by the sdkusage analyzer's GitHub API client. See the header.
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        SRC="$RUNNER_TEMP/plugin-source"
+        # No `|| true` and no continue-on-error anywhere in this step: a non-zero exit
+        # from plugincheck2 means at least one error-severity diagnostic, and that is
+        # precisely the state a catalog submission rejects.
+        #
+        # SKIP_LLM_* switch off the two analyzers that need a paid model API key; they
+        # would otherwise fail to configure. SKIP_OSV_SCANNER exists too -- never set it,
+        # it disables one of the three checks this gate was built for.
+        #
+        # The image bakes in one Go patch (1.26.6 as of 2026-09-08) and the official
+        # golang image sets GOTOOLCHAIN=local, so `go list` refuses a go.mod that asks for
+        # a newer patch and the run comes back `govulncheck-scan-failed`. GOTOOLCHAIN=auto
+        # lets it download the patch go.mod names; the price is one fetch per run.
+        docker run --rm --pull=always \
+          -v "$GITHUB_WORKSPACE/${ZIP}:/archive.zip:ro" \
+          -v "$SRC:/source_code" \
+          -v "$GITHUB_WORKSPACE/${CONFIG}:/config.yaml:ro" \
+          -e GITHUB_TOKEN -e GOTOOLCHAIN=auto -e SKIP_LLM_REVIEW=1 -e SKIP_LLM_CODEDIFF=1 \
+          grafana/plugin-validator-cli:latest \
+          -config /config.yaml -sourceCodeUri file:///source_code -ghaOutput /archive.zip
