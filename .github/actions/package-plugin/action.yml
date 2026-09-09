@@ -106,9 +106,14 @@ runs:
 
         echo "zip=${OUT}" >> "$GITHUB_OUTPUT"
         echo "sha1=${OUT}.sha1" >> "$GITHUB_OUTPUT"
+
+        # The listing is captured once and fed to head as a here-string: under `pipefail`
+        # a `unzip -l | head` pipeline can fail the step with exit 141, because head closes
+        # the pipe after 20 lines while unzip is still writing the rest.
+        LISTING="$(unzip -l "${OUT}")"
         echo "### Packaged" >> "$GITHUB_STEP_SUMMARY"
         echo '```' >> "$GITHUB_STEP_SUMMARY"
-        unzip -l "${OUT}" | head -20 >> "$GITHUB_STEP_SUMMARY"
+        head -20 <<<"$LISTING" >> "$GITHUB_STEP_SUMMARY"
         echo '```' >> "$GITHUB_STEP_SUMMARY"
 
     # Fail loudly here rather than shipping an archive that installs to nothing.
@@ -119,8 +124,13 @@ runs:
         ZIP: ${{ steps.pkg.outputs.zip }}
       run: |
         set -euo pipefail
-        unzip -l "$ZIP" | grep -q "${PLUGIN_ID}/plugin.json" \
+        # Same trap as the listing in the Package step: under `pipefail` a
+        # `unzip -l | grep -q` pipeline can fail a perfectly good archive with exit 141,
+        # because grep exits at the first match while unzip is still writing. So the
+        # listing is captured first and matched with here-strings, with no pipe involved.
+        LISTING="$(unzip -l "$ZIP")"
+        grep -q "${PLUGIN_ID}/plugin.json" <<<"$LISTING" \
           || { echo "FATAL: ${PLUGIN_ID}/plugin.json missing -- wrong root directory"; exit 1; }
-        unzip -l "$ZIP" | grep -q "${PLUGIN_ID}/gpx_" \
+        grep -q "${PLUGIN_ID}/gpx_" <<<"$LISTING" \
           || { echo "FATAL: no gpx_ backend binary -- plugin would load frontend-only"; exit 1; }
         echo "layout OK"

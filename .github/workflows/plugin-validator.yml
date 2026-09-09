@@ -85,7 +85,10 @@ jobs:
             ${{ steps.pkg.outputs.sha1 }}
           retention-days: 7
 
+      # The token is this job's own, and this workflow is `contents: read` -- the
+      # validator action's header explains why a write-scoped one must never get here.
       - name: Validate plugin
         uses: ./.github/actions/validate-plugin
         with:
           zip: ${{ steps.pkg.outputs.zip }}
+          github-token: ${{ github.token }}

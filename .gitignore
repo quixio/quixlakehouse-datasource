@@ -54,7 +54,9 @@ ci/
 # public design doc is wanted, write a scrubbed one at docs/design.md instead.
 docs/internal/
 
-# Local credentials. This repo is PUBLIC -- .env carries live SDK/PAT tokens.
+# Local dev settings: plugin id, Grafana port and image tag for docker-compose.
+# Ignored because this repo is PUBLIC and .env is the file a token gets pasted
+# into -- keep it out of git so that paste can never become a commit.
 .env
 
 # Playwright MCP session artefacts: page snapshots, console logs and screenshots

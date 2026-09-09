@@ -30,7 +30,7 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   calendar rather than on anything a commit did — which is exactly how the findings
   above reached us from Grafana instead of from CI. See `CONTRIBUTING.md`. (sc-74412)
 
-## 0.0.8 - 2026-09-07
+## 0.0.8 - 2026-08-17
 
 ### Changed
 

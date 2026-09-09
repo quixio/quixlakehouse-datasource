@@ -12,10 +12,18 @@
 # of the same tool on the same zip failed. Handing the validator source code is the
 # entire point of this action; do not drop the flag to make CI quieter.
 #
-# GITHUB_TOKEN is mandatory, not a nicety. sdkusage asks the GitHub API for the release
+# A GitHub token is mandatory, not a nicety. sdkusage asks the GitHub API for the release
 # date of the pinned SDK version, and on an API error it logs at debug level and reports
 # nothing -- an unauthenticated runner hits the anonymous rate limit and the SDK-age
 # check turns into a false green. The token buys the authenticated quota.
+#
+# It is an INPUT rather than `github.token` read inside this action, so the caller owns
+# its scope, and it must never be write-scoped. Every call the validator makes with it is
+# a read, while the thing receiving it is a third-party image on a mutable `latest` tag
+# that is re-pulled on every run: a `contents: write` token handed in here would let
+# whatever that tag resolves to push commits and cut releases in this repo. Call this
+# action only from a job whose permissions are `contents: read` -- see the two-job split
+# in ../../workflows/release.yml.
 #
 # We deliberately track `latest` with --pull=always. Grafana runs whatever is current at
 # submission time, so pinning a tag here would make CI green against a validator nobody
@@ -44,6 +52,12 @@ inputs:
   zip:
     description: Path to the packaged plugin archive, relative to the workspace root.
     required: true
+  github-token:
+    description: >-
+      Token for the validator's GitHub API calls (sdkusage). Read-only is enough; pass
+      the github.token of a job whose permissions are `contents: read`. Never pass a
+      write-scoped token -- it goes into a third-party container. See the header.
+    required: true
   config:
     description: Path to the validator config YAML, relative to the workspace root.
     required: false
@@ -52,12 +66,16 @@ inputs:
 runs:
   using: composite
   steps:
-    # A clean copy of the checkout is what Grafana sees when it clones the repo, so that
-    # is what the validator should analyse. Excluding node_modules and dist keeps semgrep
-    # and gosec off vendored third-party code (minutes of runtime and findings we do not
-    # own), and excluding the build outputs keeps the source tree from containing the very
-    # archive being validated. package.json travels with it, so the packagejson analyzer
-    # compares like with like -- see the version note in ../package-plugin/action.yml.
+    # What Grafana sees when it clones the repo is the tracked files, so that is exactly
+    # what the validator gets -- listed by `git ls-files`, copied at their working-copy
+    # contents so a version stamped into package.json by release.yml still travels (the
+    # packagejson analyzer needs that; see the version note in ../package-plugin/action.yml).
+    #
+    # Enumerating the tracked files, rather than copying everything minus an exclude list,
+    # is what makes this safe: untracked and ignored files -- .env, docs/internal/,
+    # node_modules/, dist/, the archive being validated -- cannot reach the container at
+    # all, whereas an exclude list is fail-open and would have to name every one of them.
+    # `git ls-files` needs the checkout's .git directory, which actions/checkout provides.
     - name: Stage source tree for the validator
       shell: bash
       run: |
@@ -65,14 +83,7 @@ runs:
         SRC="$RUNNER_TEMP/plugin-source"
         rm -rf "$SRC"
         mkdir -p "$SRC"
-        rsync -a \
-          --exclude=.git \
-          --exclude=node_modules \
-          --exclude=dist \
-          --exclude=pkg-root \
-          --exclude='*.zip' \
-          --exclude='*.sha1' \
-          ./ "$SRC/"
+        git ls-files -z | rsync -a --files-from=- --from0 ./ "$SRC/"
         echo "staged source at $SRC"
 
     - name: Run plugin validator
@@ -81,7 +92,7 @@ runs:
         ZIP: ${{ inputs.zip }}
         CONFIG: ${{ inputs.config }}
         # Read by the sdkusage analyzer's GitHub API client. See the header.
-        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
         SRC="$RUNNER_TEMP/plugin-source"

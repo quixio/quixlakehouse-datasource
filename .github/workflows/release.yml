@@ -7,6 +7,18 @@
 # points at, which is why the validator runs here and not only on PRs: a tag must never
 # publish an archive the catalog would reject.
 #
+# WHY TWO JOBS. Everything except the final upload is read-only work, and the validator
+# hands its GitHub token to grafana/plugin-validator-cli:latest -- a third-party image on
+# a mutable tag, re-pulled on every run. A single job with `contents: write` would put a
+# token that can push commits and cut releases inside that container. So `package` runs
+# under the workflow's `contents: read` and `attach` is the only job that asks for write,
+# with no container and no third-party action in it. The zip crosses between them as a
+# build artefact, not as a shared filesystem.
+#
+# Ordering inside `package` is also deliberate: the artefact is uploaded BEFORE validation
+# so a rejected zip can still be downloaded and inspected, and the release is attached
+# only AFTER validation passes.
+#
 # The build and packaging steps live in .github/actions/package-plugin, shared with
 # .github/workflows/plugin-validator.yml so both produce the same archive. The reason the
 # archive is laid out the way it is ("THE LAYOUT IS THE WHOLE JOB") is documented in that
@@ -26,7 +38,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   PLUGIN_ID: quix-quixlakehouse-datasource
@@ -34,6 +46,13 @@ env:
 jobs:
   package:
     runs-on: ubuntu-latest
+    # The validator pulls a container, runs semgrep, gosec, govulncheck and a ClamAV
+    # sweep; the default 6h timeout would let a wedged run burn a whole runner day.
+    # Matches the equivalent job in plugin-validator.yml.
+    timeout-minutes: 30
+    outputs:
+      zip: ${{ steps.pkg.outputs.zip }}
+      sha1: ${{ steps.pkg.outputs.sha1 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +88,8 @@ jobs:
 
       # Uploaded BEFORE validation, deliberately: if the validator rejects the archive
       # the run fails, and the artefact is then the only way to inspect what was actually
-      # built. Upload after validation and a red run leaves nothing behind.
+      # built. Upload after validation and a red run leaves nothing behind. The `attach`
+      # job also downloads this artefact by name, so the name is load-bearing.
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.zip }}
@@ -79,22 +99,47 @@ jobs:
 
       # ...and validation runs BEFORE the release is attached, so a tag can never publish
       # an archive that a Grafana catalog submission would reject. See the action header
-      # for what it checks and why it needs the source tree.
+      # for what it checks and why it needs the source tree. The token it is given is this
+      # job's read-only one, on purpose -- the action's header explains why that matters.
       - name: Validate plugin
         uses: ./.github/actions/validate-plugin
         with:
           zip: ${{ steps.pkg.outputs.zip }}
+          github-token: ${{ github.token }}
+
+  # The only job with write access, and the only one that runs no container and no
+  # third-party action. It never rebuilds: it publishes the exact bytes `package` built
+  # and the validator passed.
+  attach:
+    needs: package
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      # No checkout: the artefact is all this job needs, and skipping the clone keeps the
+      # write token away from anything that executes repository code. download-artifact
+      # unpacks into the workspace root, so both files land there under their own names.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.zip }}
 
       - name: Attach to release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Without a checkout `gh` has no git remote to infer the repository from.
+          GH_REPO: ${{ github.repository }}
+          ZIP: ${{ needs.package.outputs.zip }}
+          SHA1: ${{ needs.package.outputs.sha1 }}
         run: |
+          set -euo pipefail
+          ls -l "${ZIP}" "${SHA1}"
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            "${{ steps.pkg.outputs.zip }}" \
-            "${{ steps.pkg.outputs.sha1 }}" \
+            "${ZIP}" \
+            "${SHA1}" \
           || gh release upload "${GITHUB_REF_NAME}" \
-            "${{ steps.pkg.outputs.zip }}" \
-            "${{ steps.pkg.outputs.sha1 }}" --clobber
+            "${ZIP}" \
+            "${SHA1}" --clobber
