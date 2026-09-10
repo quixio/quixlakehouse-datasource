@@ -85,6 +85,12 @@ ENV GF_PATHS_PROVISIONING=/var/lib/grafana/provisioning \
     # This is precisely why deploying here does not wait on Grafana Labs signing.
     GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=${PLUGIN_ID} \
     GF_ANALYTICS_REPORTING_ENABLED=false \
-    GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    GF_ANALYTICS_CHECK_FOR_UPDATES=false \
+    # The migration lock is what fails on the Quix state volume: it is CIFS-backed
+    # and cannot do the POSIX file locking SQLite needs, so with it on Grafana loops
+    # on its first migration and never listens. Safe ONLY at one replica -- the lock
+    # is what stops two instances migrating at once. A workaround for the storage,
+    # not a fix: if it does not clear the loop, the answer is another database engine.
+    GF_DATABASE_MIGRATION_LOCKING=false
 
 ENTRYPOINT ["/usr/local/bin/quix-entrypoint.sh"]

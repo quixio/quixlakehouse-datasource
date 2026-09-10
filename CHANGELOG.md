@@ -37,6 +37,20 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   belongs to the pipeline repo's `quix.yaml`; `app.yaml` cannot express it. Local
   `docker run` invocations must therefore pass the variable and a mounted volume —
   `deploy/README.md` is updated. (sc-74412)
+- **Grafana's SQLite migration lock is switched off in the deployment image**, via a
+  new `GF_DATABASE_MIGRATION_LOCKING=false` default. Grafana holds that lock for the
+  duration of its ~792-step migration run; on the Quix state volume acquiring it
+  fails with `database is locked (5) (SQLITE_BUSY)`, Grafana gives up after 10
+  retries, restarts the run, and loops on migration 1 forever — it never reaches
+  `HTTP Server Listen`, so the ingress serves 502. That volume is provisioned for
+  QuixStreams RocksDB stores, which lock themselves, and is CIFS-backed (the
+  `mode=-rwxrwxrwx` Grafana warns about), so it cannot provide the POSIX byte-range
+  locking SQLite needs; the same image on a local bind mount migrates and is healthy
+  in 14 seconds. Disabling the lock **assumes a single replica** — the lock is what
+  stops two instances migrating the same database at once. It is an `ENV` default, so
+  a deployment variable of the same name still overrides it. It is unproven against
+  that storage at the time of writing: if it does not clear the loop, the answer is a
+  different database engine, not more tuning. (sc-74412)
 
 **The plugin itself is unchanged.** This release touches only the deployment image
 and its documentation, so the v0.1.0 archive already submitted to Grafana is
