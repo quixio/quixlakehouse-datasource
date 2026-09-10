@@ -6,7 +6,43 @@ All notable changes to this plugin are documented here. Versions follow
 Pre-1.0 deliberately: alerting works but is not yet demonstrated end to end with a
 provisioned rule, and `maxDataPoints` is not pushed down.
 
-## 0.1.0 - unreleased
+## 0.1.1 - unreleased
+
+### Changed
+
+- **The deployment image now keeps Grafana's database on the Quix state volume**, so
+  dashboards, alert rules, users and datasource edits survive a restart or redeploy.
+  `GF_PATHS_DATA` and `GF_PATHS_LOGS` are derived at boot from
+  `Quix__Deployment__State__Path` — the path Quix injects when the deployment has
+  state enabled — rather than left at the image default of `/var/lib/grafana`, which
+  is thrown away with the container. `GF_PATHS_PLUGINS` deliberately stays on the
+  image: the plugin is baked into `/var/lib/grafana/plugins`, and pointing that
+  variable at the volume (as the quix-samples Grafana image does) would hide it.
+  Because the mount arrives root-owned, the image no longer declares `USER 472`; the
+  entrypoint takes ownership as root and drops to uid 472 before exec'ing Grafana.
+  (sc-74412)
+- **Datasource provisioning is now seed-only.** Grafana re-applies provisioning at
+  every boot and overwrote any URL or token corrected in the UI, so persisting the
+  database alone would not have fixed the reported symptom. The entrypoint renders
+  `deploy/provisioning/datasources/*.tpl` only when the marker
+  `<state>/grafana/.datasource-provisioned` is absent; dropping the rendered file on
+  later boots does not remove the datasource, because Grafana leaves an existing
+  provisioned datasource in the database when its file disappears.
+  `QUIXLAKE_FORCE_PROVISION=true` re-seeds from the environment for one boot, which
+  overwrites UI edits by design. Dashboard, alerting, notifier and plugin
+  provisioning is code-managed and is still re-applied every boot. (sc-74412)
+- **State must be enabled on the deployment**, and the entrypoint now exits with an
+  explanation when `Quix__Deployment__State__Path` is absent instead of starting a
+  Grafana that silently forgets everything. The `state: enabled: true` declaration
+  belongs to the pipeline repo's `quix.yaml`; `app.yaml` cannot express it. Local
+  `docker run` invocations must therefore pass the variable and a mounted volume —
+  `deploy/README.md` is updated. (sc-74412)
+
+**The plugin itself is unchanged.** This release touches only the deployment image
+and its documentation, so the v0.1.0 archive already submitted to Grafana is
+unaffected and does not need resubmitting.
+
+## 0.1.0 - 2026-09-10
 
 ### Changed
 

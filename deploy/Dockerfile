@@ -52,14 +52,34 @@ COPY deploy/provisioning /etc/grafana/provisioning-template
 COPY deploy/entrypoint.sh /usr/local/bin/quix-entrypoint.sh
 RUN chmod +x /usr/local/bin/quix-entrypoint.sh \
     && chmod +x /var/lib/grafana/plugins/${PLUGIN_ID}/gpx_* \
-    # The entrypoint renders provisioning at boot. Grafana runs as uid 472 and cannot
-    # write to /etc/grafana, so render into a directory it owns and point Grafana there
-    # via GF_PATHS_PROVISIONING rather than fighting permissions.
+    # The entrypoint renders provisioning at boot into a directory owned by uid 472
+    # -- the user Grafana ends up running as -- rather than into the image's
+    # /etc/grafana tree, and points Grafana there via GF_PATHS_PROVISIONING. The
+    # rendered datasource file carries the token and is chmod 600, so it has to be
+    # owned by the server's uid to be readable at all.
     && mkdir -p /var/lib/grafana/provisioning/datasources \
     && chown -R 472:0 /var/lib/grafana/provisioning /var/lib/grafana/plugins
 
-USER 472
+# Deliberately NO `USER 472` here. The entrypoint has to start as root: the Quix
+# persistent state volume is mounted owned by root, and only root can create the
+# Grafana subdirectories on it and chown them to 472. The entrypoint drops to uid
+# 472 itself (setpriv, su fallback) immediately before exec'ing Grafana, so the
+# server still runs unprivileged -- see deploy/entrypoint.sh.
 
+# GF_PATHS_DATA and GF_PATHS_LOGS are NOT set here on purpose. They must point at
+# the state mount, whose path Quix injects at runtime as
+# Quix__Deployment__State__Path, so the entrypoint derives and exports them.
+#
+# GF_PATHS_PLUGINS is NOT set here either, and must NOT be pointed at the state
+# volume. The quix-samples Grafana image does exactly that; copying it here would
+# break this image, because our plugin is baked into /var/lib/grafana/plugins at
+# build time and repointing the variable would hide it behind an empty volume.
+#
+# GF_PATHS_PROVISIONING stays on the image filesystem: the entrypoint writes it at
+# boot from the environment and from the baked templates, so it is derived state and
+# needs no volume. (The datasource within it is seeded once per state volume, not
+# re-rendered every boot -- see deploy/entrypoint.sh -- but the marker that records
+# that lives on the volume, not here.)
 ENV GF_PATHS_PROVISIONING=/var/lib/grafana/provisioning \
     # Unsigned is fine on self-hosted Grafana, which is what a Quix deployment is.
     # This is precisely why deploying here does not wait on Grafana Labs signing.

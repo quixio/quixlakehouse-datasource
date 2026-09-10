@@ -38,7 +38,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GF_INSTALL_PLUGINS: "https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.0/quix-quixlakehouse-datasource-0.1.0.zip;quix-quixlakehouse-datasource"
+      GF_INSTALL_PLUGINS: "https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.1/quix-quixlakehouse-datasource-0.1.1.zip;quix-quixlakehouse-datasource"
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "quix-quixlakehouse-datasource"
 ```
 
@@ -56,7 +56,7 @@ environment use route 2 or 3.
 For a Grafana you administer directly:
 
 ```bash
-grafana-cli --pluginUrl https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.0/quix-quixlakehouse-datasource-0.1.0.zip \
+grafana-cli --pluginUrl https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.1/quix-quixlakehouse-datasource-0.1.1.zip \
   plugins install quix-quixlakehouse-datasource
 
 sudo systemctl restart grafana-server
@@ -72,7 +72,7 @@ Grafana finds plugins by directory name, so unzipping to `dist/` produces a plug
 is silently never listed.
 
 ```bash
-unzip quix-quixlakehouse-datasource-0.1.0.zip -d /var/lib/grafana/plugins/
+unzip quix-quixlakehouse-datasource-0.1.1.zip -d /var/lib/grafana/plugins/
 chmod +x /var/lib/grafana/plugins/quix-quixlakehouse-datasource/gpx_*
 sudo systemctl restart grafana-server
 ```
@@ -89,7 +89,7 @@ appears, and every query fails — because only the frontend half is running.
 Each release ships a `.sha1` beside the zip:
 
 ```bash
-sha1sum -c quix-quixlakehouse-datasource-0.1.0.zip.sha1
+sha1sum -c quix-quixlakehouse-datasource-0.1.1.zip.sha1
 ```
 
 ---
@@ -103,15 +103,24 @@ ghcr.io/quixio/quixlakehouse-grafana
 ```
 
 Stock Grafana with the plugin already inside, the unsigned allowlist set, and an
-entrypoint that provisions the datasource from two environment variables:
+entrypoint that seeds the datasource from two environment variables:
 
 ```bash
 docker run -d -p 3000:3000 \
+  -v quixlakehouse-grafana-state:/tmp/grafana-state \
+  -e Quix__Deployment__State__Path=/tmp/grafana-state \
   -e QUIXLAKE_URL='https://<your-lakehouse-query-host>' \
   -e QUIXLAKE_TOKEN='<token or PAT>' \
   -e GF_SECURITY_ADMIN_PASSWORD='<password>' \
   ghcr.io/quixio/quixlakehouse-grafana:<version>
 ```
+
+`Quix__Deployment__State__Path` is required and must point at a mounted volume:
+Grafana's database lives under it, and the image refuses to start without it rather
+than lose your dashboards on the next restart. On Quix Cloud the platform injects
+the variable once state is enabled on the deployment. The datasource is seeded from
+`QUIXLAKE_URL`/`QUIXLAKE_TOKEN` on the volume's first boot only, so later edits in
+the UI stick.
 
 Pin a version tag or a digest. `:latest` only moves when a version is tagged, and `:dev`
 tracks the current development branch and will change under you.

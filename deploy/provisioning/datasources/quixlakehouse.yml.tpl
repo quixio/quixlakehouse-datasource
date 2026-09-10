@@ -1,9 +1,11 @@
-# Datasource provisioning template. Rendered at boot by deploy/entrypoint.sh, which
-# replaces the __PLACEHOLDER__ tokens from environment variables.
+# Datasource provisioning template. Rendered by deploy/entrypoint.sh, which replaces
+# the __PLACEHOLDER__ tokens from environment variables.
 #
-# Provisioned rather than configured by hand so that a redeploy always comes back
-# with a working datasource -- Grafana's SQLite database is not persisted in a Quix
-# deployment, so anything created through the UI is lost on restart.
+# SEED ONLY. The entrypoint renders this on the first boot of a state volume and not
+# again, so a fresh deployment comes up with a working datasource without anyone
+# typing a URL, while later boots leave the database row alone. Grafana's SQLite
+# database lives on the Quix state volume (Quix__Deployment__State__Path), so that
+# row -- and everything else created through the UI -- survives a restart.
 apiVersion: 1
 
 datasources:
@@ -28,12 +30,10 @@ datasources:
       # frontend-only JSON datasource it replaces.
       token: __QUIXLAKE_TOKEN__
     # Editable so the URL and token can be corrected from Connections > Data Sources
-    # without a redeploy. Provisioning still SEEDS the values from the environment,
-    # because a Quix deployment has no persisted Grafana database to create them in.
+    # without a redeploy, and those edits now LAST: the database is on the state
+    # volume, and the entrypoint stops re-rendering this file once the datasource has
+    # been seeded, so Grafana has nothing to overwrite the edit with on the next boot.
     #
-    # Known consequence, and the reason this was false: Grafana re-applies
-    # provisioning at every boot, so a UI edit survives only until the container
-    # restarts. Making edits durable needs a persisted Grafana DB (GF_DATABASE_* to
-    # Postgres) -- the state mount is not an option here, since the entrypoint runs as
-    # uid 472 and cannot take ownership of it.
+    # To deliberately throw a UI edit away and re-seed from the environment, set
+    # QUIXLAKE_FORCE_PROVISION=true on the deployment for one boot.
     editable: true

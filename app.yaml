@@ -15,6 +15,15 @@ language: docker
 blobStorage:
   bind: true
 
+# STATE MUST BE ENABLED ON THE DEPLOYMENT. Grafana keeps dashboards, alert rules,
+# users and datasource edits in a SQLite database, and the entrypoint puts that
+# database on the Quix state volume via Quix__Deployment__State__Path -- a variable
+# Quix injects itself, which is why it is not declared below. Enabling state is not
+# something this file can do: the `state: enabled: true` declaration belongs to the
+# deployment block in the PIPELINE repo's quix.yaml. Without it the variable is
+# absent and the entrypoint refuses to start, rather than running a Grafana that
+# forgets everything on restart.
+
 variables:
   - name: GF_SECURITY_ADMIN_PASSWORD
     inputType: Secret
