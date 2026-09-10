@@ -12,7 +12,7 @@ catalog submission, no review queue. That only becomes necessary for Grafana Clo
 | File | Purpose |
 | --- | --- |
 | `Dockerfile` | 3-stage build: frontend → Go backend → stock Grafana with both baked in |
-| `entrypoint.sh` | Restores Grafana's database from the state volume, seeds the datasource on first boot, starts the 10-second backup loop, then execs Grafana |
+| `entrypoint.sh` | Restores Grafana's database from the state volume if it passes an integrity check, seeds the datasource on first boot, starts the 10-second backup loop, then execs Grafana |
 | `provisioning/datasources/quixlakehouse.yml.tpl` | Datasource template with `__PLACEHOLDER__` tokens |
 | `../app.yaml` | Quix application descriptor (at repo root, so the build context is the repo) |
 
@@ -125,6 +125,9 @@ block needs the bind as a sibling of `variables`, not inside it:
       - name: GF_SECURITY_ADMIN_PASSWORD
         inputType: Secret
         value: grafana_admin_password
+      - name: GF_SECURITY_SECRET_KEY
+        inputType: Secret
+        value: grafana_secret_key
       - name: GF_SERVER_ROOT_URL
         inputType: FreeText
         value: https://grafana-<workspace>.deployments-dev.quix.io
@@ -148,13 +151,43 @@ Flight server documents for `FLIGHT_SQL_PORT`.
 edited in Connections > Data Sources, plus dashboards, alert rules, users, API keys
 and everything else Grafana keeps in SQLite.
 
-**How:** `entrypoint.sh` copies `/var/lib/grafana/grafana.db` to
-`<state>/grafana/grafana.db` **every 10 seconds**, and copies it back before Grafana
-starts on the next boot. The copy loop is a background child started before the
-entrypoint execs Grafana; it survives the exec and runs until the container stops.
-Each copy is written to a `.tmp` and renamed, so a restore never reads a half-written
-file, and the loop holds an `flock` on the state volume so two containers cannot
-interleave.
+**How:** `entrypoint.sh` snapshots `/var/lib/grafana/grafana.db` to
+`<state>/grafana/grafana.db` **every 10 seconds**, and restores it before Grafana
+starts on the next boot. The loop is a background child started before the entrypoint
+execs Grafana; it survives the exec and runs until the container stops.
+
+**The snapshot is taken with SQLite's online backup API, not `cp`.** This is the part
+to not "simplify" later. A `cp` of a live database is check-then-act however it is
+guarded: a write transaction starting while `cp` reads mixes pre- and post-transaction
+pages, and the result is a file that opens fine and then fails `PRAGMA
+integrity_check`. Measured on this image, with a `grafana.db-journal` guard in front of
+it, `cp` produced a malformed copy in **2 of 118 attempts (~1.7%) at Grafana's idle
+write rate**, and in 6 of 18 and 17 of 25 attempts under load — and a malformed copy
+restored on the next boot crash-loops Grafana into re-restoring the same file forever.
+`sqlite3 <db> ".backup <dest>"` is safe against concurrent writers by construction and
+measured 12 of 12 clean against a continuous writer. That is why the deploy image
+installs `sqlite`; if the binary is ever missing at runtime the entrypoint logs loudly
+and turns persistence **off** rather than falling back to `cp`.
+
+**Both directions are integrity-checked.** Every snapshot is verified before it
+replaces the copy on the volume, and the copy is verified again before it is restored;
+only a result of exactly `ok` is accepted. Both checks run on container-local disk,
+because a database cannot be *opened* on the CIFS volume at all (below) — the snapshot
+is taken locally and then copied over, and the restore is copied down and checked
+before it is moved into place. The transfer goes to a `.tmp` beside the target and is
+renamed, so a restore never reads a half-written file, and every tick of the loop takes
+an `flock` on the state volume so two containers cannot interleave. A tick that cannot
+take the lock is **skipped and retried on the next one** — losing the race to an
+overlapping redeploy does not disable backups for the life of the container — and that
+is logged once rather than every ten seconds.
+
+**A copy that fails its integrity check is not restored.** It is renamed aside to
+`<state>/grafana/grafana.db.corrupt-<UTC timestamp>`, the path is logged, and Grafana
+starts with a fresh database. Backups stay **on**: there is nothing left to protect
+once the copy is known bad, so a sound one replaces it within ten seconds. A copy that
+cannot be *read* at all is the other case — nothing is known about it, so backups are
+switched **off** for that container rather than overwriting a possibly-good copy with
+the empty database Grafana is about to create.
 
 **Why a copy and not the live database.** The obvious move — point `GF_PATHS_DATA` at
 the state mount — does not work and will waste a day if you retry it. The volume is
@@ -176,10 +209,8 @@ shutdown copy never actually ran (`su` does not forward signals to its child, an
 supervising shell died inside its own trap), so the mechanism that was supposed to
 guarantee zero loss was in practice writing nothing at all.
 
-A periodic copy skips its turn if a `grafana.db-journal` sits beside the database,
-meaning a transaction is in flight; that is what keeps a hot copy consistent, since
-Grafana 13 runs SQLite with `wal = false`. One copy is taken immediately at boot, so a
-container stopped inside the first ten seconds still leaves a usable database.
+One snapshot is taken immediately at boot, so a container stopped inside the first ten
+seconds still leaves a usable database.
 
 **State must be enabled on the deployment.** The entrypoint reads
 `Quix__Deployment__State__Path`, which Quix injects only when the deployment has
@@ -193,6 +224,42 @@ an earlier version aborted here and took the deployment down.
 `QUIXLAKE_FORCE_PROVISION=true` re-seeds the datasource from the environment on the
 next boot, overwriting UI edits. It is the way back from a datasource edited into a
 broken state.
+
+`QUIXLAKE_SKIP_RESTORE=true` (`1`, `yes`, `on` also work) skips the restore entirely
+and starts from an empty database. It is the way out of a copy that passes its
+integrity check but still wedges Grafana — a half-applied migration, say. Backups stay
+on, so the copy on the volume is **overwritten within ten seconds**; move it aside
+first if you want to keep it.
+
+### `GF_SECURITY_SECRET_KEY` is required, and must be set before the first boot
+
+Grafana encrypts `secureJsonData` — which is where the lakehouse API token lives — with
+`security.secret_key`, and its built-in default is published in Grafana's own
+`conf/defaults.ini`. A token encrypted with the default key is recoverable by anyone
+who can read the database file, and that file now sits on a shared state volume instead
+of only inside the container. So `app.yaml` declares `GF_SECURITY_SECRET_KEY` with
+`required: true`; set it to any long random string.
+
+**Before the first boot.** Changing the key later re-encrypts nothing: secrets already
+written with the old key become undecryptable, and the datasource token has to be
+re-entered in Connections > Data Sources. The entrypoint warns at boot when the key is
+unset while persistence is on — a warning, not a refusal to start, because a fatal
+check on a missing variable took this deployment down once already.
+
+### The admin password can no longer be rotated through Quix
+
+`GF_SECURITY_ADMIN_PASSWORD` is applied only when Grafana **creates** the admin user,
+on the first boot against an empty database. Now that the database persists, changing
+that secret in Quix and redeploying has **no effect** — the user already exists, and a
+leaked admin password cannot be rotated that way. Rotate it in the Grafana UI
+(profile > change password), or from a shell in the running container:
+
+```bash
+grafana-cli --homepath /usr/share/grafana admin reset-admin-password '<new-password>'
+```
+
+Keep the Quix secret in step with whatever you rotate to, so that a state volume which
+is ever wiped comes back with the password you expect.
 
 Dashboards and alert rules can still be provisioned as code instead — drop them in
 `deploy/provisioning/dashboards/` and `deploy/provisioning/alerting/`, which the

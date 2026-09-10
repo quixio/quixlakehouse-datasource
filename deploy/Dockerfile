@@ -45,6 +45,16 @@ ENV PLUGIN_ID=${PLUGIN_ID}
 
 USER root
 
+# sqlite3 (3.53.4 in this base image) is a hard dependency of the entrypoint's backup
+# loop, not a convenience. A plain `cp` of the live grafana.db is check-then-act and
+# produces torn copies -- measured at ~1.7% even at Grafana's idle write rate, and far
+# worse under load -- which then restore into a Grafana that crash-loops. `sqlite3 <db>
+# ".backup <dest>"` uses SQLite's online backup API, which is safe against concurrent
+# writers, and it is the only such mechanism available in this image. The same binary
+# runs the PRAGMA integrity_check that gates every copy in both directions. Without it
+# the entrypoint disables persistence rather than falling back to cp.
+RUN apk add --no-cache sqlite
+
 COPY --from=frontend /build/dist /var/lib/grafana/plugins/${PLUGIN_ID}
 COPY --from=backend  /build/dist /var/lib/grafana/plugins/${PLUGIN_ID}
 

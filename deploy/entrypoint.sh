@@ -3,12 +3,15 @@
 #
 #   1. resolves the Quix-injected lakehouse credentials, and aborts if they are absent;
 #   2. restores Grafana's SQLite database from the Quix state volume, if a copy is
-#      there, before Grafana opens it;
+#      there and that copy passes PRAGMA integrity_check, before Grafana opens it;
 #   3. seeds the datasource provisioning file from the environment, but only when
 #      there was nothing to restore, so a URL or token edited in the UI is not
 #      overwritten on the next boot;
-#   4. starts a background loop that copies the database out to the state volume
+#   4. starts a background loop that snapshots the database out to the state volume
 #      every 10 seconds, then execs Grafana as uid 472 so it becomes PID 1.
+#
+# Snapshots go through sqlite3's online backup API and never through cp -- a cp of a
+# live database tears, whatever it is guarded with. See copy_db_to_state.
 #
 # Why a COPY and never the live database: the Quix state volume is CIFS-backed and
 # cannot grant the exclusive POSIX locks SQLite needs. A Grafana whose GF_PATHS_DATA
@@ -34,9 +37,9 @@ TARGET_DIR="${GF_PATHS_PROVISIONING:-/var/lib/grafana/provisioning}"
 # The live database, at Grafana's own default location on container-local disk.
 GF_DATA_DIR="${GF_PATHS_DATA:-/var/lib/grafana}"
 LIVE_DB="${GF_DATA_DIR}/grafana.db"
-# SQLite's rollback journal. Present only while a transaction is in flight -- the
-# backup loop below uses it as the signal to skip a round.
-LIVE_JOURNAL="${LIVE_DB}-journal"
+# Where each snapshot is written and verified before anything on the state volume is
+# touched. On container-local disk, because a database cannot be opened on the volume.
+BACKUP_STAGE="${LIVE_DB}.backup.tmp"
 
 # There is no shutdown copy (see the hand-off at the bottom), so this interval IS the
 # loss window. 10s is cheap for a ~1.5 MB file on a CIFS mount.
@@ -51,6 +54,18 @@ if [ "$(id -u)" = "0" ]; then IS_ROOT=1; else IS_ROOT=0; fi
 
 db_size() {
   stat -c %s "$1" 2>/dev/null || echo unknown
+}
+
+# True only for a database SQLite calls sound. PRAGMA integrity_check prints exactly
+# `ok` on a good file and one line per problem otherwise; sqlite3 exits non-zero with
+# nothing on stdout if it cannot open the file at all, which fails the same comparison.
+# The size test is not redundant: a zero-byte file is a *valid* empty database to
+# SQLite and would otherwise pass.
+db_is_ok() {
+  [ -n "${SQLITE_BIN:-}" ] || return 1
+  [ -s "$1" ] || return 1
+  [ "$(timeout "$COPY_TIMEOUT" "$SQLITE_BIN" "$1" 'PRAGMA integrity_check;' 2>/dev/null \
+     | head -n 1)" = "ok" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -113,6 +128,8 @@ else
   if mkdir -p "$STATE_GRAFANA" 2>/dev/null; then
     PERSIST=1
     echo "quix-entrypoint: persistence ON, database copy at ${STATE_DB}"
+    echo "quix-entrypoint: (QUIXLAKE_SKIP_RESTORE=true ignores that copy and starts from"
+    echo "quix-entrypoint: an empty database instead)"
   else
     echo "quix-entrypoint: WARNING: Quix__Deployment__State__Path is '${STATE_DIR}' but" >&2
     echo "quix-entrypoint: ${STATE_GRAFANA} cannot be created, so persistence is OFF." >&2
@@ -121,31 +138,111 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Both directions go through sqlite3: the backup API to take a snapshot of a live
+# database, PRAGMA integrity_check to verify one. It is installed in deploy/Dockerfile
+# precisely for this. If it is somehow absent, persistence is switched OFF rather than
+# falling back to cp -- cp of a live database produces torn copies at a measured rate,
+# and a torn copy restored on the next boot is worse than no copy at all. Nothing is
+# deleted from the volume in that state, so a later container with sqlite3 picks the
+# existing copy back up.
+# ---------------------------------------------------------------------------
+SQLITE_BIN="$(command -v sqlite3 2>/dev/null || true)"
+if [ "$PERSIST" = "1" ] && [ -z "$SQLITE_BIN" ]; then
+  PERSIST=0
+  echo "quix-entrypoint: WARNING: sqlite3 is not on PATH, so persistence is OFF for this" >&2
+  echo "quix-entrypoint: container -- nothing is restored and nothing is backed up. There" >&2
+  echo "quix-entrypoint: is deliberately no cp fallback: a cp of a live database tears." >&2
+  echo "quix-entrypoint: Fix: 'apk add --no-cache sqlite' in deploy/Dockerfile's runtime" >&2
+  echo "quix-entrypoint: stage. Any existing copy on the volume is left untouched." >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Secrets at rest. Grafana encrypts secureJsonData -- which is where the datasource's
+# lakehouse token lives -- with security.secret_key, and its built-in default is
+# published in conf/defaults.ini. Before persistence the database never left the
+# container; now a durable copy sits on a shared state volume, where a token encrypted
+# with a publicly known key is recoverable by anyone who can read the file.
+#
+# A warning, never fatal: a fatal check on a missing variable took this deployment down
+# once already. Grafana must always boot.
+# ---------------------------------------------------------------------------
+if [ "$PERSIST" = "1" ] && [ -z "${GF_SECURITY_SECRET_KEY:-}" ]; then
+  echo "quix-entrypoint: WARNING: GF_SECURITY_SECRET_KEY is not set, so Grafana encrypts" >&2
+  echo "quix-entrypoint: the lakehouse API token with its PUBLICLY KNOWN default key and" >&2
+  echo "quix-entrypoint: writes it to the state volume. Anyone who can read ${STATE_DB}" >&2
+  echo "quix-entrypoint: can decrypt the token. Set GF_SECURITY_SECRET_KEY as a Quix" >&2
+  echo "quix-entrypoint: secret -- BEFORE the first boot, because changing it later" >&2
+  echo "quix-entrypoint: leaves already-encrypted secrets undecryptable and the token" >&2
+  echo "quix-entrypoint: has to be re-entered in Connections > Data Sources." >&2
+  echo "quix-entrypoint: Starting anyway." >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Restore, before Grafana starts and therefore before it opens the database.
 #
 # Copied via a temporary name and renamed into place: a cp cut short by COPY_TIMEOUT
 # must not leave a truncated grafana.db behind for Grafana to open.
 #
-# If a copy exists on the volume but restoring it FAILS, backups are switched off for
-# this container. Otherwise the periodic loop below would overwrite a good copy with
-# the empty database Grafana is about to create -- the one way this design could lose
-# data that a plain ephemeral Grafana would not.
+# The copy is VERIFIED before it is trusted. It is read onto container-local disk and
+# PRAGMA integrity_check is run there -- not on the state file itself, because opening
+# a database on the CIFS volume is the exact thing that does not work (see the top of
+# this file), and the local copy is byte-for-byte what would be restored anyway. Only
+# a result of exactly `ok` earns the rename into place.
+#
+# A copy that FAILS the check is renamed aside to grafana.db.corrupt-<UTC timestamp>
+# and Grafana starts fresh, with backups left ON. Restoring a malformed database
+# crash-loops Grafana, and because the next boot restores the same file it stays
+# crash-looped; there is nothing to protect in a copy that is known bad, so the sound
+# copy this container takes a few seconds later should replace it.
+#
+# A copy that cannot be READ is the other case and keeps backups OFF for this
+# container: nothing is known about that file, so the periodic loop must not overwrite
+# a possibly-good copy with the empty database Grafana is about to create -- the one
+# way this design could lose data that a plain ephemeral Grafana would not.
+#
+# QUIXLAKE_SKIP_RESTORE skips all of it and starts empty: the way out of a database
+# that is intact enough to pass integrity_check but still wedges Grafana.
 # ---------------------------------------------------------------------------
+SKIP_RESTORE=0
+case "$(printf '%s' "${QUIXLAKE_SKIP_RESTORE:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) SKIP_RESTORE=1 ;;
+esac
+
 RESTORED=0
-if [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ]; then
+if [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ] && [ "$SKIP_RESTORE" = "1" ]; then
+  echo "quix-entrypoint: WARNING: QUIXLAKE_SKIP_RESTORE is set, so ${STATE_DB} is NOT" >&2
+  echo "quix-entrypoint: restored and Grafana starts with an empty database. Backups stay" >&2
+  echo "quix-entrypoint: ON, so that copy is overwritten within ${BACKUP_INTERVAL}s --" >&2
+  echo "quix-entrypoint: move it aside now if you still want it." >&2
+elif [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ]; then
   mkdir -p "$GF_DATA_DIR"
-  if timeout "$COPY_TIMEOUT" cp "$STATE_DB" "${LIVE_DB}.restore" \
-     && mv -f "${LIVE_DB}.restore" "$LIVE_DB"; then
-    if [ "$IS_ROOT" = "1" ]; then chown 472:0 "$LIVE_DB"; fi
-    RESTORED=1
-    echo "quix-entrypoint: restored Grafana database from ${STATE_DB} ($(db_size "$LIVE_DB") bytes)"
-  else
+  rm -f "${LIVE_DB}.restore" 2>/dev/null || true
+  if ! timeout "$COPY_TIMEOUT" cp "$STATE_DB" "${LIVE_DB}.restore"; then
     rm -f "${LIVE_DB}.restore" 2>/dev/null || true
     PERSIST=0
-    echo "quix-entrypoint: WARNING: could not restore ${STATE_DB}. Starting with an" >&2
+    echo "quix-entrypoint: WARNING: could not read ${STATE_DB}. Starting with an" >&2
     echo "quix-entrypoint: empty database and seeding the datasource from the environment." >&2
     echo "quix-entrypoint: Backups are OFF for this container so the existing copy on the" >&2
     echo "quix-entrypoint: volume is not overwritten with the empty one." >&2
+  elif db_is_ok "${LIVE_DB}.restore"; then
+    mv -f "${LIVE_DB}.restore" "$LIVE_DB"
+    if [ "$IS_ROOT" = "1" ]; then chown 472:0 "$LIVE_DB"; fi
+    RESTORED=1
+    echo "quix-entrypoint: restored Grafana database from ${STATE_DB} ($(db_size "$LIVE_DB") bytes, integrity_check ok)"
+  else
+    rm -f "${LIVE_DB}.restore" 2>/dev/null || true
+    CORRUPT_DB="${STATE_DB}.corrupt-$(date -u +%Y%m%dT%H%M%SZ)"
+    echo "quix-entrypoint: WARNING: ${STATE_DB} FAILED PRAGMA integrity_check and was NOT" >&2
+    echo "quix-entrypoint: restored -- restoring it would crash-loop Grafana on every boot." >&2
+    if mv -f "$STATE_DB" "$CORRUPT_DB" 2>/dev/null; then
+      echo "quix-entrypoint: The bad copy is kept at ${CORRUPT_DB}" >&2
+    else
+      echo "quix-entrypoint: It could not be renamed aside, so the next backup overwrites" >&2
+      echo "quix-entrypoint: it. Copy it off the volume now if you want to examine it." >&2
+    fi
+    echo "quix-entrypoint: Starting with an empty database and seeding the datasource from" >&2
+    echo "quix-entrypoint: the environment. Backups stay ON, so a sound copy replaces it" >&2
+    echo "quix-entrypoint: within ${BACKUP_INTERVAL}s." >&2
   fi
 fi
 
@@ -205,49 +302,100 @@ for sub in dashboards alerting notifiers plugins; do
 done
 
 # ---------------------------------------------------------------------------
-# Backup: a copy of the database out to the state volume, never the database itself.
+# Backup: a snapshot of the database out to the state volume, never the database
+# itself.
 #
-# Written to a .tmp beside the target and renamed, so the next container's restore can
-# never read a half-written file. Its only caller is the loop below, under that lock.
+# Taken with sqlite3's online backup API, NOT with cp. A cp of a live database is
+# check-then-act however it is guarded -- a write transaction starting while cp reads
+# mixes pre- and post-transaction pages, and the result is a file that opens and then
+# fails integrity_check. Measured on this image: ~1.7% of copies were malformed at
+# Grafana's idle write rate (2 of 118) and 6/18 and 17/25 under load, even with a
+# grafana.db-journal guard in front of them. The backup API is safe against concurrent
+# writers by construction and measured 12/12 clean against a continuous writer.
+#
+# The snapshot lands on container-local disk and is integrity-checked there before
+# anything on the volume is touched, for two reasons: the CIFS-backed volume cannot
+# grant the locks SQLite needs to open a database on it -- as a backup destination or
+# for the check -- and copying an already-verified file that nothing is writing to is
+# the one case where a plain cp is sound. That cp goes to a .tmp beside the target and
+# is renamed, so the next container's restore can never read a half-written file.
+#
+# Its only caller is the loop below, under that lock.
 # ---------------------------------------------------------------------------
 copy_db_to_state() {
   [ -f "$LIVE_DB" ] || return 0
-  if timeout "$COPY_TIMEOUT" cp "$LIVE_DB" "${STATE_DB}.tmp"; then
-    mv -f "${STATE_DB}.tmp" "$STATE_DB"
-  else
-    rm -f "${STATE_DB}.tmp" 2>/dev/null || true
+  rm -f "$BACKUP_STAGE" 2>/dev/null || true
+  if ! timeout "$COPY_TIMEOUT" "$SQLITE_BIN" "$LIVE_DB" ".backup '${BACKUP_STAGE}'"; then
+    rm -f "$BACKUP_STAGE" 2>/dev/null || true
     return 1
   fi
+  if ! db_is_ok "$BACKUP_STAGE"; then
+    rm -f "$BACKUP_STAGE" 2>/dev/null || true
+    return 1
+  fi
+  if ! timeout "$COPY_TIMEOUT" cp "$BACKUP_STAGE" "${STATE_DB}.tmp"; then
+    rm -f "$BACKUP_STAGE" "${STATE_DB}.tmp" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "$BACKUP_STAGE" 2>/dev/null || true
+  mv -f "${STATE_DB}.tmp" "$STATE_DB" || return 1
 }
 
-# Holds one exclusive lock for the whole life of the loop, so two containers sharing a
-# state volume cannot interleave their copies. A container that cannot take the lock
-# does not back up at all -- that is the safe outcome, not a reason to retry. Failures
-# go to stderr and are never fatal: losing a backup must not take Grafana down.
+# The exclusive lock is taken PER TICK, not once for the life of the loop. Quix state
+# is shared between replicas, and an overlapping redeploy puts two containers on the
+# same volume; whichever loses the race may well be the one that outlives the other, so
+# it has to keep trying rather than give up for good while the boot log promises a copy
+# every ${BACKUP_INTERVAL}s. A tick that cannot take the lock is skipped. The subshell
+# is what makes that possible: the lock is released when it exits and fd 9 closes.
 #
-# Why copying a live database is safe here: Grafana 13.1.1 ships `wal = false`
-# (conf/defaults.ini), so SQLite is in rollback-journal mode and there is no -wal/-shm
-# pair that would have to be captured atomically alongside the database. In that mode
-# the copy is consistent as long as no transaction is in flight, and an in-flight
-# transaction is exactly what a sibling grafana.db-journal means -- so a round that
-# sees one skips and retries on the next tick. The journal is never copied and never
-# waited on.
+# Its exit status is the tick's outcome: 0 copied, 3 lock held elsewhere, anything else
+# a failed copy. Each state is logged on its first occurrence and then not again until
+# it changes -- a line every ten seconds for the life of a deployment is noise, not a
+# signal. Failures are never fatal: losing a backup must not take Grafana down.
 #
 # The loop copies BEFORE it sleeps, so a container stopped inside the first interval
 # still leaves a usable database on the volume rather than nothing. On a cold boot that
 # first round is a no-op -- Grafana has not created the file yet -- and copy_db_to_state
-# returns quietly; after a restore it re-copies what is already there, which is cheap.
+# returns quietly; after a restore it re-snapshots what is already there, which is cheap.
 backup_worker() {
-  exec 9>"$BACKUP_LOCK"
-  if ! flock -n 9; then
-    echo "quix-entrypoint: WARNING: ${BACKUP_LOCK} is held by another container, so" >&2
-    echo "quix-entrypoint: this one will not back its database up." >&2
-    return 0
-  fi
+  lock_warned=0
+  fail_warned=0
   while :; do
-    if [ ! -e "$LIVE_JOURNAL" ] && ! copy_db_to_state; then
-      echo "quix-entrypoint: WARNING: periodic backup to ${STATE_DB} failed" >&2
-    fi
+    rc=0
+    (
+      exec 9>"$BACKUP_LOCK"
+      flock -n 9 || exit 3
+      copy_db_to_state || exit 1
+      exit 0
+    ) || rc=$?
+    case "$rc" in
+      0)
+        if [ "$lock_warned" = "1" ]; then
+          echo "quix-entrypoint: took ${BACKUP_LOCK}; backups to ${STATE_DB} resumed."
+          lock_warned=0
+        fi
+        if [ "$fail_warned" = "1" ]; then
+          echo "quix-entrypoint: backup to ${STATE_DB} is succeeding again."
+          fail_warned=0
+        fi
+        ;;
+      3)
+        if [ "$lock_warned" = "0" ]; then
+          echo "quix-entrypoint: WARNING: ${BACKUP_LOCK} is held by another container, so" >&2
+          echo "quix-entrypoint: this tick is skipped. Retrying every ${BACKUP_INTERVAL}s;" >&2
+          echo "quix-entrypoint: logged once, not on every tick." >&2
+          lock_warned=1
+        fi
+        ;;
+      *)
+        if [ "$fail_warned" = "0" ]; then
+          echo "quix-entrypoint: WARNING: backup to ${STATE_DB} failed; nothing on the" >&2
+          echo "quix-entrypoint: volume was replaced. Retrying every ${BACKUP_INTERVAL}s;" >&2
+          echo "quix-entrypoint: logged once, not on every tick. Grafana is unaffected." >&2
+          fail_warned=1
+        fi
+        ;;
+    esac
     sleep "$BACKUP_INTERVAL" || true
   done
 }
@@ -262,9 +410,11 @@ if [ "$PERSIST" = "1" ]; then
   # error on it exits a non-interactive shell outright and cannot be guarded.
   if touch "$BACKUP_LOCK" 2>/dev/null; then
     backup_worker &
-    echo "quix-entrypoint: backing up every ${BACKUP_INTERVAL}s; there is no copy at"
-    echo "quix-entrypoint: shutdown, so up to ${BACKUP_INTERVAL} seconds of changes are"
-    echo "quix-entrypoint: lost if the container stops between copies."
+    echo "quix-entrypoint: backing up every ${BACKUP_INTERVAL}s via sqlite3's online"
+    echo "quix-entrypoint: backup API, integrity-checked before it replaces the copy on"
+    echo "quix-entrypoint: the volume. There is no copy at shutdown, so up to"
+    echo "quix-entrypoint: ${BACKUP_INTERVAL} seconds of changes are lost if the container"
+    echo "quix-entrypoint: stops between copies."
   else
     PERSIST=0
     echo "quix-entrypoint: WARNING: cannot create ${BACKUP_LOCK}; persistence is OFF." >&2

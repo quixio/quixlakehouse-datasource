@@ -8,7 +8,7 @@
 #
 # govulncheck-issue-found -- an escalation, warning -> error. It ships as a `warning`, but
 # the 2026-09-07 submission report carried 35 stdlib vulnerabilities behind that single
-# warning (the toolchain was Go 1.25.5, already EOL then; we are on Go 1.26.5 now, see
+# warning (the toolchain was Go 1.25.5, already EOL then; we are on Go 1.26.6 now, see
 # go.mod), and a warning nobody reads is exactly how the Trivy job in
 # .github/workflows/ci.yml became decorative.
 #

@@ -29,6 +29,16 @@ variables:
     description: Grafana admin password. Set this -- the image would otherwise use Grafana's default of "admin".
     required: true
 
+  # Grafana encrypts secureJsonData -- which is where the datasource's lakehouse token
+  # lives -- with security.secret_key, and its built-in default is published in
+  # conf/defaults.ini. With persistence the database now sits on a shared state volume,
+  # so the default key means a recoverable token. Required, and required BEFORE the
+  # first boot: Grafana does not re-encrypt anything when the key changes.
+  - name: GF_SECURITY_SECRET_KEY
+    inputType: Secret
+    description: "Key Grafana uses to encrypt secureJsonData (the lakehouse API token) at rest. Grafana's built-in default is public, so without this the token stored on the persistent state volume is trivially decryptable by anyone who can read the file. MUST be set before the FIRST boot: changing it later leaves secrets encrypted with the old key undecryptable, and the datasource token then has to be re-entered in Connections > Data Sources. Any long random string."
+    required: true
+
   - name: GF_SERVER_ROOT_URL
     inputType: FreeText
     description: Public URL of this deployment, e.g. https://grafana-<workspace>.deployments-dev.quix.io. Grafana builds login redirects and share links from it; if it is wrong, sign-in appears broken in ways that look like a plugin fault.

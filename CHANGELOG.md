@@ -25,10 +25,9 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   live database stays on container-local disk and the entrypoint copies it out to
   `<state>/grafana/grafana.db` every **10 seconds**, restoring it before Grafana
   starts. The loop is a background child started before the entrypoint execs Grafana,
-  so Grafana still runs as PID 1 and handles its own signals. Copies go to a `.tmp`
-  and are renamed so a restore never reads a half-written file, are skipped while a
-  `grafana.db-journal` shows a transaction in flight, and are serialised across
-  containers with `flock`.
+  so Grafana still runs as PID 1 and handles its own signals. Each copy is verified,
+  written to a `.tmp` and renamed so a restore never reads a half-written file, and
+  serialised across containers with an `flock` taken per tick.
 
   Consequences worth knowing. There is **no copy at shutdown**, so any stop — graceful
   or not — loses **up to 10 seconds** of changes, back to the last periodic copy. That
@@ -42,17 +41,65 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   deploy image drops its `USER 472` line so the entrypoint can write to the
   root-owned state mount, and drops to uid 472 itself before starting Grafana.
 
+  **The copy is taken with SQLite's online backup API, not `cp`.** `cp` was written
+  first and is unsound at any guard: it is check-then-act, so a write transaction
+  starting mid-copy mixes pre- and post-transaction pages. Measured on this image with
+  the `grafana.db-journal` guard in place, `cp` produced a database that failed `PRAGMA
+  integrity_check` in **2 of 118 attempts (~1.7%) at Grafana's idle write rate**, and in
+  6 of 18 and 17 of 25 attempts under load; `sqlite3 <db> ".backup <dest>"` measured
+  **12 of 12 clean** against a continuous writer. The journal guard is gone with the
+  `cp` — it implied a safety it never provided. `sqlite3` is installed in the deploy
+  image for this, and if it is ever absent at runtime the entrypoint disables
+  persistence loudly instead of silently falling back to `cp`.
+
+  **Both directions are integrity-checked, and a bad copy is quarantined rather than
+  restored.** A snapshot only replaces the copy on the volume when `PRAGMA
+  integrity_check` on it returns exactly `ok`, and the copy is checked again before it
+  is restored. One that fails is renamed aside to `grafana.db.corrupt-<UTC timestamp>`,
+  logged with that path, and left for the next sound snapshot to replace — previously
+  only `cp`'s exit status was checked, so a malformed copy was restored into a Grafana
+  that crash-looped and then restored the same file again on every boot.
+  `QUIXLAKE_SKIP_RESTORE=true` skips the restore entirely and starts from an empty
+  database, for a copy that passes the check but still wedges Grafana.
+
+  **`GF_SECURITY_SECRET_KEY` is now a required deployment variable** (`app.yaml`).
+  Grafana encrypts `secureJsonData` with it, and its built-in default is published in
+  `conf/defaults.ini` — in review, the plaintext lakehouse token was recovered from a
+  real `grafana.db` using nothing but that public key. Before this change the database
+  never left the container; now a durable copy sits on a shared state volume, so the
+  default key is no longer survivable. It **must be set before the first boot**:
+  changing it later leaves secrets encrypted with the old key undecryptable and the
+  datasource token has to be re-entered. The entrypoint warns when it is unset with
+  persistence on, and does not exit — a fatal check on a missing variable has taken
+  this deployment down before.
+
+  **The backup lock is taken per tick.** It used to be taken once, so a replica that
+  lost the race — any second replica, or the old container during an overlapping
+  redeploy — never backed up again for its whole life while the boot log had already
+  promised a copy every ten seconds, and its edits were lost. A tick that cannot take
+  the lock is now skipped and retried on the next one; the loss is logged once rather
+  than every ten seconds, and once more when the lock is finally acquired.
+
+  Finally, a documentation consequence: `GF_SECURITY_ADMIN_PASSWORD` is applied only
+  when Grafana *creates* the admin user, so with a persistent database changing that
+  Quix secret has no effect on later boots and a leaked admin password cannot be
+  rotated that way. Rotate in the Grafana UI or with `grafana-cli admin
+  reset-admin-password`; `deploy/README.md` documents it.
+
 ### Changed
 
-- **Go toolchain 1.27.1 → 1.26.5**, and the deploy image `golang:1.27-alpine` back to
+- **Go toolchain 1.27.1 → 1.26.6**, and the deploy image `golang:1.27-alpine` back to
   `golang:1.26-alpine`. A version going *down* is deliberate. Grafana fixed
   plugin-validator issue #827 in **v0.49.0**, and that image is pinned to Go **1.26.6**
   with `GOTOOLCHAIN=local` — it cannot switch toolchains, so a `go.mod` declaring
   anything above 1.26.6 is refused outright and the catalog scan fails before it reads a
-  line of our source. 1.26.5 is the floor `grafana-plugin-sdk-go v0.296.4` requires and
+  line of our source. 1.26.6 is the one value that works: the image refuses anything above it, and
+  1.26.5 or lower builds a binary whose stdlib carries advisories that govulncheck's
+  binary scan reports (GO-2026-5026, -5942, -5972, -6088..-6091, -6218). It is also at
+  or above the floor `grafana-plugin-sdk-go v0.296.4` requires and
   sits under that ceiling, so it also survives a future image bump. Verified against the
   released image: `go 1.26.8` fails with `go.mod requires go >= 1.26.8 (running go
-  1.26.6; GOTOOLCHAIN=local)`, `go 1.26.5` passes with only the expected
+  1.26.6; GOTOOLCHAIN=local)`, `go 1.26.6` passes with only the expected
   `unsigned-plugin` and gosec G115 warnings. Because the scan now runs, the
   `govulncheck-scan-failed` demotion the 0.1.0 entry describes is reverted to **error**
   in `.github/plugin-validator.yaml` as part of the same change. No code changed with

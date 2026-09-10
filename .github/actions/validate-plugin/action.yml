@@ -39,10 +39,12 @@
 # Our go.mod must stay at or BELOW the image's Go version. The image bakes exactly one Go
 # patch and the official golang base sets GOTOOLCHAIN=local, so it cannot switch to
 # another: a directive above what it carries is refused outright and the source analyzers
-# never run. As of validator v0.49.0 the image is on Go 1.26.6, and we declare 1.26.5 --
+# never run. As of validator v0.49.0 the image is on Go 1.26.6, and we declare 1.26.6 to match --
 # the floor grafana-plugin-sdk-go v0.296.4 asks for, and under the image's ceiling, so a
 # future image bump can only widen the gap. Measured against v0.49.0 on the 0.0.9
-# archive: 1.26.8 fails the govulncheck source scan, 1.26.5 passes it clean. Raising the
+# archive: 1.26.8 fails the govulncheck source scan; 1.26.5 clears it but its BINARY
+# scan then reports stdlib advisories fixed in 1.26.6, so 1.26.6 is the one value that
+# satisfies both. Raising the
 # directive is therefore a CI-affecting change -- check the image's `go version` first.
 # (History: for a few days we declared 1.27.1 against an image whose govulncheck was a
 # mismatched 1.26 build and could scan no source at all -- grafana/plugin-validator issue
@@ -111,7 +113,7 @@ runs:
         #
         # The image bakes in one Go version (1.26.6 as of validator v0.49.0) and the
         # official golang image sets GOTOOLCHAIN=local, under which `go list` refuses any
-        # go.mod newer than that. Ours declares 1.26.5, below the image, so nothing is
+        # go.mod newer than that. Ours declares 1.26.6, equal to the image, so nothing is
         # fetched and GOTOOLCHAIN=auto is a no-op today. It is kept as free insurance: if
         # the directive is ever raised past the image, this is what lets the container
         # fetch the named toolchain instead of failing every source analyzer. See the
