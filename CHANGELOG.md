@@ -42,6 +42,22 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   deploy image drops its `USER 472` line so the entrypoint can write to the
   root-owned state mount, and drops to uid 472 itself before starting Grafana.
 
+### Changed
+
+- **Go toolchain 1.27.1 → 1.26.5**, and the deploy image `golang:1.27-alpine` back to
+  `golang:1.26-alpine`. A version going *down* is deliberate. Grafana fixed
+  plugin-validator issue #827 in **v0.49.0**, and that image is pinned to Go **1.26.6**
+  with `GOTOOLCHAIN=local` — it cannot switch toolchains, so a `go.mod` declaring
+  anything above 1.26.6 is refused outright and the catalog scan fails before it reads a
+  line of our source. 1.26.5 is the floor `grafana-plugin-sdk-go v0.296.4` requires and
+  sits under that ceiling, so it also survives a future image bump. Verified against the
+  released image: `go 1.26.8` fails with `go.mod requires go >= 1.26.8 (running go
+  1.26.6; GOTOOLCHAIN=local)`, `go 1.26.5` passes with only the expected
+  `unsigned-plugin` and gosec G115 warnings. Because the scan now runs, the
+  `govulncheck-scan-failed` demotion the 0.1.0 entry describes is reverted to **error**
+  in `.github/plugin-validator.yaml` as part of the same change. No code changed with
+  it. (sc-74412)
+
 ## 0.1.0 - unreleased
 
 ### Changed

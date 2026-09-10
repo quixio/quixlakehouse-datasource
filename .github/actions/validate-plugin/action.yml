@@ -32,21 +32,21 @@
 # schedule.
 #
 # -strict is deliberately NOT used: it makes warnings fatal, and two warnings here are
-# expected -- `unsigned-plugin` until Grafana Labs signs us, and `govulncheck-scan-failed`
-# for the reason below. Per-rule severities are set individually in
+# expected -- `unsigned-plugin` until Grafana Labs signs us, and a gosec G115
+# integer-conversion finding. Per-rule severities are set individually in
 # .github/plugin-validator.yaml.
 #
-# We now outrun the image's Go MINOR on purpose. The image bakes Go 1.26.6 (as of
-# 2026-09-08) while go.mod asks for 1.27.1, so its govulncheck -- a 1.26 build -- aborts
-# the SOURCE scan with "uses version go1.26 of the source-processing packages but runs
-# version go1.27 of `go list`". Staying on 1.26 would not buy a clean run: Grafana's own
-# review runner has 1.27 on PATH and produced that same line in the 2026-09-07 report, so
-# their scan breaks whatever we declare. It is grafana/plugin-validator issue #827, fixed
-# by PR #851 (merged 2026-09-09, unreleased). GOTOOLCHAIN=auto stays mandatory either
-# way: the official golang image sets GOTOOLCHAIN=local, under which the container's
-# 1.26.6 refuses our go.mod outright instead of merely failing the scan. The resulting
-# `govulncheck-scan-failed` is downgraded to a warning in ../../plugin-validator.yaml,
-# which also carries the trigger for reverting it.
+# Our go.mod must stay at or BELOW the image's Go version. The image bakes exactly one Go
+# patch and the official golang base sets GOTOOLCHAIN=local, so it cannot switch to
+# another: a directive above what it carries is refused outright and the source analyzers
+# never run. As of validator v0.49.0 the image is on Go 1.26.6, and we declare 1.26.5 --
+# the floor grafana-plugin-sdk-go v0.296.4 asks for, and under the image's ceiling, so a
+# future image bump can only widen the gap. Measured against v0.49.0 on the 0.0.9
+# archive: 1.26.8 fails the govulncheck source scan, 1.26.5 passes it clean. Raising the
+# directive is therefore a CI-affecting change -- check the image's `go version` first.
+# (History: for a few days we declared 1.27.1 against an image whose govulncheck was a
+# mismatched 1.26 build and could scan no source at all -- grafana/plugin-validator issue
+# #827, fixed by PR #851 and released in v0.49.0.)
 
 name: Validate plugin
 description: >-
@@ -109,10 +109,13 @@ runs:
         # would otherwise fail to configure. SKIP_OSV_SCANNER exists too -- never set it,
         # it disables one of the three checks this gate was built for.
         #
-        # The image bakes in one Go version (1.26.6 as of 2026-09-08) and the official
-        # golang image sets GOTOOLCHAIN=local, under which `go list` refuses our go.mod
-        # outright. GOTOOLCHAIN=auto lets it fetch the 1.27.1 go.mod names; the price
-        # is one fetch per run, and a `govulncheck-scan-failed` warning. See the header.
+        # The image bakes in one Go version (1.26.6 as of validator v0.49.0) and the
+        # official golang image sets GOTOOLCHAIN=local, under which `go list` refuses any
+        # go.mod newer than that. Ours declares 1.26.5, below the image, so nothing is
+        # fetched and GOTOOLCHAIN=auto is a no-op today. It is kept as free insurance: if
+        # the directive is ever raised past the image, this is what lets the container
+        # fetch the named toolchain instead of failing every source analyzer. See the
+        # header.
         docker run --rm --pull=always \
           -v "$GITHUB_WORKSPACE/${ZIP}:/archive.zip:ro" \
           -v "$SRC:/source_code" \

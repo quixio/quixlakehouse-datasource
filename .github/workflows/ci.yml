@@ -70,8 +70,7 @@ jobs:
       # to analyse a module targeting a newer one ("the Go language version used to
       # build golangci-lint is lower than the targeted Go version"). Building from
       # source uses this runner's toolchain, so it tracks go.mod automatically and
-      # cannot drift out of step again -- which matters more now that go.mod asks for
-      # 1.27.1, a minor that prebuilt releases lag behind for weeks.
+      # cannot drift out of step again.
       #
       # /v2 in the module path matches `version: '2'` in .golangci.yml.
       - name: golangci-lint
