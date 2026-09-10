@@ -66,11 +66,12 @@ jobs:
         run: go test -race -coverprofile=coverage.out ./...
 
       # Installed with `go install` rather than golangci-lint-action, deliberately.
-      # The action ships a prebuilt binary, and a binary built with go1.24 refuses to
-      # analyse a module targeting go1.25 ("the Go language version used to build
-      # golangci-lint is lower than the targeted Go version"). Building from source
-      # uses this runner's toolchain, so it tracks go.mod automatically and cannot
-      # drift out of step again.
+      # The action ships a prebuilt binary, and a binary built with an older Go refuses
+      # to analyse a module targeting a newer one ("the Go language version used to
+      # build golangci-lint is lower than the targeted Go version"). Building from
+      # source uses this runner's toolchain, so it tracks go.mod automatically and
+      # cannot drift out of step again -- which matters more now that go.mod asks for
+      # 1.27.1, a minor that prebuilt releases lag behind for weeks.
       #
       # /v2 in the module path matches `version: '2'` in .golangci.yml.
       - name: golangci-lint

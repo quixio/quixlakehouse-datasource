@@ -31,17 +31,22 @@
 # cost is that this workflow can go red without a commit, which is also why it runs on a
 # schedule.
 #
-# -strict is deliberately NOT used: it makes warnings fatal, and `unsigned-plugin` is an
-# expected, unavoidable warning until Grafana Labs signs us. Rules we do want fatal are
-# escalated individually in .github/plugin-validator.yaml.
+# -strict is deliberately NOT used: it makes warnings fatal, and two warnings here are
+# expected -- `unsigned-plugin` until Grafana Labs signs us, and `govulncheck-scan-failed`
+# for the reason below. Per-rule severities are set individually in
+# .github/plugin-validator.yaml.
 #
-# Go toolchain skew is only half-handled here. The image pins a Go PATCH (1.26.6 as of
-# 2026-09-08), so we run it with GOTOOLCHAIN=auto and `go list` fetches whatever patch
-# go.mod asks for. A newer MINOR in go.mod is not handled: govulncheck then dies with
-# "uses version go1.26 of the source-processing packages but runs version go1.27 of
-# `go list`", so do not outrun the image's `FROM golang:` minor. That same line in
-# Grafana's 2026-09-07 report came from Go 1.27 on THEIR host -- a property of their
-# runner, which a green run here can neither reproduce nor vouch for.
+# We now outrun the image's Go MINOR on purpose. The image bakes Go 1.26.6 (as of
+# 2026-09-08) while go.mod asks for 1.27.1, so its govulncheck -- a 1.26 build -- aborts
+# the SOURCE scan with "uses version go1.26 of the source-processing packages but runs
+# version go1.27 of `go list`". Staying on 1.26 would not buy a clean run: Grafana's own
+# review runner has 1.27 on PATH and produced that same line in the 2026-09-07 report, so
+# their scan breaks whatever we declare. It is grafana/plugin-validator issue #827, fixed
+# by PR #851 (merged 2026-09-09, unreleased). GOTOOLCHAIN=auto stays mandatory either
+# way: the official golang image sets GOTOOLCHAIN=local, under which the container's
+# 1.26.6 refuses our go.mod outright instead of merely failing the scan. The resulting
+# `govulncheck-scan-failed` is downgraded to a warning in ../../plugin-validator.yaml,
+# which also carries the trigger for reverting it.
 
 name: Validate plugin
 description: >-
@@ -104,10 +109,10 @@ runs:
         # would otherwise fail to configure. SKIP_OSV_SCANNER exists too -- never set it,
         # it disables one of the three checks this gate was built for.
         #
-        # The image bakes in one Go patch (1.26.6 as of 2026-09-08) and the official
-        # golang image sets GOTOOLCHAIN=local, so `go list` refuses a go.mod that asks for
-        # a newer patch and the run comes back `govulncheck-scan-failed`. GOTOOLCHAIN=auto
-        # lets it download the patch go.mod names; the price is one fetch per run.
+        # The image bakes in one Go version (1.26.6 as of 2026-09-08) and the official
+        # golang image sets GOTOOLCHAIN=local, under which `go list` refuses our go.mod
+        # outright. GOTOOLCHAIN=auto lets it fetch the 1.27.1 go.mod names; the price
+        # is one fetch per run, and a `govulncheck-scan-failed` warning. See the header.
         docker run --rm --pull=always \
           -v "$GITHUB_WORKSPACE/${ZIP}:/archive.zip:ro" \
           -v "$SRC:/source_code" \

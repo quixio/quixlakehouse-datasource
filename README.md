@@ -141,7 +141,7 @@ datasource disappears on restart while a provisioned one is recreated every boot
 
 | Tool | Version used | Notes |
 |---|---|---|
-| Go | 1.26+ | `go.mod` declares `go 1.26.8` |
+| Go | 1.27+ | `go.mod` declares `go 1.27.1` |
 | Node | 22+ | `.nvmrc` says 22; 24 also works |
 | mage | 1.17+ | `go install github.com/magefile/mage@latest` |
 | Docker | any recent | for the dev Grafana |
