@@ -12,7 +12,7 @@ catalog submission, no review queue. That only becomes necessary for Grafana Clo
 | File | Purpose |
 | --- | --- |
 | `Dockerfile` | 3-stage build: frontend → Go backend → stock Grafana with both baked in |
-| `entrypoint.sh` | Renders the datasource provisioning file from env vars, then runs Grafana |
+| `entrypoint.sh` | Restores Grafana's database from the state volume, seeds the datasource on first boot, starts the 10-second backup loop, then execs Grafana |
 | `provisioning/datasources/quixlakehouse.yml.tpl` | Datasource template with `__PLACEHOLDER__` tokens |
 | `../app.yaml` | Quix application descriptor (at repo root, so the build context is the repo) |
 
@@ -130,24 +130,71 @@ block needs the bind as a sibling of `variables`, not inside it:
         value: https://grafana-<workspace>.deployments-dev.quix.io
     blobStorage:
       bind: true
+    # Required for persistence. Without it Quix does not inject
+    # Quix__Deployment__State__Path, and the entrypoint has nowhere to copy the
+    # Grafana database to -- see "Persistence" below.
+    state:
+      enabled: true
+      size: 1
 ```
 
 Watch the `port` / `targetPort` mapping: Grafana listens on 3000, and a mismatch
 here produces silent timeouts rather than an error — the same class of trap the
 Flight server documents for `FLIGHT_SQL_PORT`.
 
-## Known gap: persistence
+## Persistence
 
-Grafana keeps dashboards, users and alert rules in SQLite at
-`/var/lib/grafana/grafana.db`, which is **not persisted** across redeploys here.
-The datasource survives because it is re-provisioned at every boot, but anything
-created through the UI is lost. Two ways out, both later work:
+**What survives:** the whole Grafana database — the datasource URL and token as
+edited in Connections > Data Sources, plus dashboards, alert rules, users, API keys
+and everything else Grafana keeps in SQLite.
 
-1. Provision dashboards and alert rules as code — drop them in
-   `deploy/provisioning/dashboards/` and `deploy/provisioning/alerting/`, which the
-   entrypoint copies through untouched. They then live in git, which is where they
-   belong.
-2. Point Grafana at an external Postgres (`GF_DATABASE_*`).
+**How:** `entrypoint.sh` copies `/var/lib/grafana/grafana.db` to
+`<state>/grafana/grafana.db` **every 10 seconds**, and copies it back before Grafana
+starts on the next boot. The copy loop is a background child started before the
+entrypoint execs Grafana; it survives the exec and runs until the container stops.
+Each copy is written to a `.tmp` and renamed, so a restore never reads a half-written
+file, and the loop holds an `flock` on the state volume so two containers cannot
+interleave.
 
-Option 1 is preferable until someone actually needs UI-authored dashboards to
-survive.
+**Why a copy and not the live database.** The obvious move — point `GF_PATHS_DATA` at
+the state mount — does not work and will waste a day if you retry it. The volume is
+CIFS-backed and cannot grant the exclusive POSIX locks SQLite needs, so Grafana loops
+forever on its first migration with `SQLITE_BUSY` and never listens. Proven three
+times on the real deployment. Ordinary reads, writes, `cp` and `mkdir` on that volume
+all work fine; only SQLite's live locking fails. So the database stays on
+container-local disk and only a copy of the file travels.
+
+**The failure window.** There is **no copy at shutdown**. Every stop — a graceful
+`docker stop`, a Quix redeploy, an OOM kill, node loss — loses whatever changed since
+the last periodic copy, so **up to 10 seconds**. That is acceptable because of what is
+being persisted: a datasource URL and an API token typed once, and dashboards and
+alert rules edited by hand. Ten seconds after saving any of those, it is on the
+volume; nobody saves a datasource and redeploys in the same breath, and if they do,
+they retype one field. Buying the last ten seconds back meant supervising Grafana
+from the entrypoint instead of exec'ing it, which was tried and reversed — the
+shutdown copy never actually ran (`su` does not forward signals to its child, and the
+supervising shell died inside its own trap), so the mechanism that was supposed to
+guarantee zero loss was in practice writing nothing at all.
+
+A periodic copy skips its turn if a `grafana.db-journal` sits beside the database,
+meaning a transaction is in flight; that is what keeps a hot copy consistent, since
+Grafana 13 runs SQLite with `wal = false`. One copy is taken immediately at boot, so a
+container stopped inside the first ten seconds still leaves a usable database.
+
+**State must be enabled on the deployment.** The entrypoint reads
+`Quix__Deployment__State__Path`, which Quix injects only when the deployment has
+`state: enabled: true` — and that declaration lives in the *pipeline* repo's
+`quix.yaml`, not in this repo's `app.yaml`. Without it there is nowhere to copy to,
+so persistence silently does not happen: Grafana logs a warning at boot and runs with
+the old behaviour, re-seeding the datasource from the environment every time and
+forgetting everything else. This is deliberately a warning and not a fatal error —
+an earlier version aborted here and took the deployment down.
+
+`QUIXLAKE_FORCE_PROVISION=true` re-seeds the datasource from the environment on the
+next boot, overwriting UI edits. It is the way back from a datasource edited into a
+broken state.
+
+Dashboards and alert rules can still be provisioned as code instead — drop them in
+`deploy/provisioning/dashboards/` and `deploy/provisioning/alerting/`, which the
+entrypoint copies through on every boot. That keeps them in git, which is a better
+home for them than a database copy regardless of this mechanism.

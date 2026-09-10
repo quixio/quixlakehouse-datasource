@@ -15,6 +15,14 @@ language: docker
 blobStorage:
   bind: true
 
+# This deployment needs STATE ENABLED, and it cannot be declared here: `state:
+# enabled: true` belongs on the deployment block in the pipeline repo's quix.yaml,
+# not in an application's app.yaml. Enabling it is what makes Quix mount a persistent
+# volume and inject Quix__Deployment__State__Path, which deploy/entrypoint.sh uses to
+# copy Grafana's database out and restore it on the next boot. Without it Grafana
+# still boots -- it warns and runs ephemerally -- but the datasource URL and token
+# edited in the UI, along with dashboards, alert rules and users, are lost on every
+# restart. See "Persistence" in deploy/README.md.
 variables:
   - name: GF_SECURITY_ADMIN_PASSWORD
     inputType: Secret

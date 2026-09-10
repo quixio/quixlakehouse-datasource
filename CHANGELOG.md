@@ -6,6 +6,42 @@ All notable changes to this plugin are documented here. Versions follow
 Pre-1.0 deliberately: alerting works but is not yet demonstrated end to end with a
 provisioned rule, and `maxDataPoints` is not pushed down.
 
+## 0.1.1 - unreleased
+
+### Added
+
+- **The Quix deployment now remembers what you type into the datasource settings
+  page.** The URL and the API token entered in Connections > Data Sources — and with
+  them dashboards, alert rules and users, since it is the whole Grafana database —
+  survive a restart or a redeploy. Previously provisioning re-applied on every boot
+  and reverted the URL, and the token was gone with the container's disk. Nothing in
+  the plugin changed; this is entirely `deploy/entrypoint.sh`. (sc-74412)
+
+  The mechanism is a **copy**, not a relocation. Pointing `GF_PATHS_DATA` at the Quix
+  state volume was tried and reversed: the volume is CIFS-backed and cannot grant the
+  exclusive POSIX locks SQLite needs, so Grafana loops forever on its first migration
+  with `SQLITE_BUSY` and never listens — reproduced three times on the real
+  deployment. Ordinary reads, writes, `cp` and `mkdir` on that volume all work, so the
+  live database stays on container-local disk and the entrypoint copies it out to
+  `<state>/grafana/grafana.db` every **10 seconds**, restoring it before Grafana
+  starts. The loop is a background child started before the entrypoint execs Grafana,
+  so Grafana still runs as PID 1 and handles its own signals. Copies go to a `.tmp`
+  and are renamed so a restore never reads a half-written file, are skipped while a
+  `grafana.db-journal` shows a transaction in flight, and are serialised across
+  containers with `flock`.
+
+  Consequences worth knowing. There is **no copy at shutdown**, so any stop — graceful
+  or not — loses **up to 10 seconds** of changes, back to the last periodic copy. That
+  is the whole loss window and it is acceptable for a URL and a token that are typed
+  once. Persistence requires `state: enabled: true` on the deployment, which is
+  declared in the pipeline repo's `quix.yaml` — without it Grafana logs a warning and
+  runs exactly as it did before, rather than refusing to start, because an earlier
+  version made that fatal and took the deployment down. The datasource template is now
+  rendered only when no database was restored, so seeding no longer overwrites UI
+  edits; `QUIXLAKE_FORCE_PROVISION=true` forces a re-seed from the environment. The
+  deploy image drops its `USER 472` line so the entrypoint can write to the
+  root-owned state mount, and drops to uid 472 itself before starting Grafana.
+
 ## 0.1.0 - unreleased
 
 ### Changed
