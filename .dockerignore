@@ -1,0 +1,34 @@
+# Build context exclusions for deploy/Dockerfile.
+#
+# The correctness entry is dist/. Without it a developer's stale local dist/
+# rides into the build context: the backend stage's `COPY . .` lands it in
+# /build/dist, and mage only adds gpx_* binaries alongside whatever is already
+# there. The runtime stage then copies the frontend dist/ first and the backend
+# dist/ second, so the stale plugin.json overwrites the one webpack just built
+# and the image reports an old version -- with no error or warning anywhere.
+#
+# CI is unaffected because it builds from a clean checkout that has no dist/,
+# which is exactly why this went unnoticed: only local builds were wrong.
+#
+# .git/ is deliberately NOT excluded. Go stamps VCS information into the binary
+# from it, and dropping it would silently change what `go version -m` reports on
+# the shipped binary.
+
+# The correctness fix.
+dist/
+
+# Large or irrelevant; excluded only so the context stays small.
+node_modules/
+.playwright-mcp/
+test-results/
+playwright-report/
+blob-report/
+coverage/
+artifacts/
+work/
+ci/
+pkg-root/
+*.zip
+*.sha1
+.env
+docs/internal/

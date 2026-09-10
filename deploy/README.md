@@ -175,7 +175,7 @@ lives in the pipeline repo's `quix.yaml` — see [Stage 3](#stage-3--deploy-to-q
 
 Because the state mount arrives owned by root, the image does **not** declare
 `USER 472`. The entrypoint creates and chowns the Grafana directories as root, then
-drops to uid 472 (`setpriv`, falling back to `su`) before exec'ing Grafana, which
+drops to uid 472 (`su`) before exec'ing Grafana, which
 therefore still runs unprivileged.
 
 > **`GF_PATHS_PLUGINS` must stay off the state volume.** The `quix-samples` Grafana

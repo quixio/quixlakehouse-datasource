@@ -62,9 +62,9 @@ RUN chmod +x /usr/local/bin/quix-entrypoint.sh \
 
 # Deliberately NO `USER 472` here. The entrypoint has to start as root: the Quix
 # persistent state volume is mounted owned by root, and only root can create the
-# Grafana subdirectories on it and chown them to 472. The entrypoint drops to uid
-# 472 itself (setpriv, su fallback) immediately before exec'ing Grafana, so the
-# server still runs unprivileged -- see deploy/entrypoint.sh.
+# Grafana subdirectories on it and chown them to 472. It drops to uid 472 itself
+# immediately before exec'ing Grafana, so the server still runs unprivileged --
+# see deploy/entrypoint.sh.
 
 # GF_PATHS_DATA and GF_PATHS_LOGS are NOT set here on purpose. They must point at
 # the state mount, whose path Quix injects at runtime as
