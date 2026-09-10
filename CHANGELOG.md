@@ -27,7 +27,8 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   starts. The loop is a background child started before the entrypoint execs Grafana,
   so Grafana still runs as PID 1 and handles its own signals. Each copy is verified,
   written to a `.tmp` and renamed so a restore never reads a half-written file, and
-  serialised across containers with an `flock` taken per tick.
+  serialised across containers with an `flock` taken per tick where the filesystem
+  grants one.
 
   Consequences worth knowing. There is **no copy at shutdown**, so any stop — graceful
   or not — loses **up to 10 seconds** of changes, back to the last periodic copy. That
@@ -36,10 +37,11 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   declared in the pipeline repo's `quix.yaml` — without it Grafana logs a warning and
   runs exactly as it did before, rather than refusing to start, because an earlier
   version made that fatal and took the deployment down. The datasource template is now
-  rendered only when no database was restored, so seeding no longer overwrites UI
-  edits; `QUIXLAKE_FORCE_PROVISION=true` forces a re-seed from the environment. The
-  deploy image drops its `USER 472` line so the entrypoint can write to the
-  root-owned state mount, and drops to uid 472 itself before starting Grafana.
+  rendered only when the database Grafana is about to open has no datasource row of its
+  own, so seeding no longer overwrites UI edits; `QUIXLAKE_FORCE_PROVISION=true` forces a
+  re-seed from the environment. The deploy image drops its `USER 472` line so the
+  entrypoint can write to the root-owned state mount, and drops to uid 472 itself before
+  starting Grafana.
 
   **The copy is taken with SQLite's online backup API, not `cp`.** `cp` was written
   first and is unsound at any guard: it is check-then-act, so a write transaction
@@ -86,6 +88,45 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   rotated that way. Rotate in the Grafana UI or with `grafana-cli admin
   reset-admin-password`; `deploy/README.md` documents it.
 
+  **Review hardening, applied before merge.** Every `sqlite3` call now carries
+  `-cmd '.timeout 10000'` and the backup loop sleeps before its first tick, so a
+  snapshot can no longer take a read lock during Grafana's startup migration and
+  provisioning burst and turn its writes into `database is locked`. Seeding is decided
+  by querying the restored database for `data_source.uid = 'quixlakehouse'` rather than
+  by "was anything restored": a snapshot taken in the seconds before Grafana committed
+  that row restored clean and left the deployment with no datasource, permanently — and
+  so did deleting it in the UI. `QUIXLAKE_SKIP_RESTORE` now renames the copy aside to
+  `grafana.db.skipped-<UTC timestamp>` instead of leaving the backup loop to destroy the
+  very file the operator chose not to restore, ten seconds later. Stale
+  `-journal`/`-wal`/`-shm` files are removed before the restored database is moved into
+  place, so a hot journal left by a previous container cannot roll foreign pages into
+  it. Quarantined copies are pruned to the newest three, on a volume the README
+  provisions at 1 GB.
+
+  **The `flock` is now probed rather than assumed.** It is taken on the same CIFS volume
+  this design documents as unable to grant SQLite's locks, so the entrypoint tests once
+  at startup whether the lock is both grantable and enforced between processes. Where it
+  is not, it says so plainly and keeps backing up **without** it — otherwise every tick
+  would have exited "held by another container" and backed up nothing at all, while the
+  boot log promised a copy every ten seconds. Two containers sharing a volume are
+  additionally ordered by an ownership marker beside the lock: newest boot wins, and a
+  container that finds a newer one stops backing up rather than writing its stale
+  database over the incoming container's edits. That narrows the redeploy race; it does
+  not eliminate it, and `deploy/README.md` says so.
+
+  A failing backup is re-announced roughly every 30 minutes with its consecutive-failure
+  count instead of once for the life of the container, and the recovery line reports how
+  many ticks were missed — a volume that fills at hour three used to be announced once,
+  hours after anyone was still reading. The staged snapshot, the `.tmp` on the volume
+  and the restored live database are `chmod 600`, each being a full database carrying
+  the encrypted token (a CIFS mount may ignore the mode, which is precisely why
+  `GF_SECURITY_SECRET_KEY` is the control that travels with the file). Values
+  substituted into the datasource template are escaped for both `sed` and YAML and the
+  scalars are quoted, so a `#`, `&` or backslash in the token or URL no longer mangles
+  the file silently. And a tick whose database is unchanged since the last copy — same
+  size and mtime — is skipped outright rather than making three full passes over the
+  file for nothing.
+
 ### Changed
 
 - **Go toolchain 1.27.1 → 1.26.6**, and the deploy image `golang:1.27-alpine` back to
@@ -95,9 +136,12 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   anything above 1.26.6 is refused outright and the catalog scan fails before it reads a
   line of our source. 1.26.6 is the one value that works: the image refuses anything above it, and
   1.26.5 or lower builds a binary whose stdlib carries advisories that govulncheck's
-  binary scan reports (GO-2026-5026, -5942, -5972, -6088..-6091, -6218). It is also at
-  or above the floor `grafana-plugin-sdk-go v0.296.4` requires and
-  sits under that ceiling, so it also survives a future image bump. Verified against the
+  binary scan reports (GO-2026-5026, -5942, -5972, -6088..-6091, -6218). The floor
+  `grafana-plugin-sdk-go v0.296.4` asks for is **1.26.5**, so 1.26.6 sits exactly **at**
+  the image's ceiling with **no headroom** — it is not under it. If Grafana ships a
+  validator image built on an older Go patch, the validator gate and the release job go
+  red with no commit of ours; that is a known fragility of pinning the image to
+  `:latest` with `govulncheck-scan-failed` armed as an error. Verified against the
   released image: `go 1.26.8` fails with `go.mod requires go >= 1.26.8 (running go
   1.26.6; GOTOOLCHAIN=local)`, `go 1.26.6` passes with only the expected
   `unsigned-plugin` and gosec G115 warnings. Because the scan now runs, the
@@ -105,7 +149,7 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   in `.github/plugin-validator.yaml` as part of the same change. No code changed with
   it. (sc-74412)
 
-## 0.1.0 - unreleased
+## 0.1.0 - 2026-09-10
 
 ### Changed
 

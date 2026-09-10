@@ -39,13 +39,22 @@
 # Our go.mod must stay at or BELOW the image's Go version. The image bakes exactly one Go
 # patch and the official golang base sets GOTOOLCHAIN=local, so it cannot switch to
 # another: a directive above what it carries is refused outright and the source analyzers
-# never run. As of validator v0.49.0 the image is on Go 1.26.6, and we declare 1.26.6 to match --
-# the floor grafana-plugin-sdk-go v0.296.4 asks for, and under the image's ceiling, so a
-# future image bump can only widen the gap. Measured against v0.49.0 on the 0.0.9
-# archive: 1.26.8 fails the govulncheck source scan; 1.26.5 clears it but its BINARY
-# scan then reports stdlib advisories fixed in 1.26.6, so 1.26.6 is the one value that
-# satisfies both. Raising the
-# directive is therefore a CI-affecting change -- check the image's `go version` first.
+# never run. As of validator v0.49.0 that image is on Go 1.26.6, and we declare 1.26.6.
+#
+# 1.26.6 is not "under" the ceiling -- it IS the ceiling, exactly, with no headroom. The
+# floor grafana-plugin-sdk-go v0.296.4 asks for is 1.26.5, so the usable range is two
+# patches wide and only the top one works: measured against v0.49.0 on the 0.0.9 archive,
+# 1.26.8 is refused by the image outright, and 1.26.5 builds a binary whose stdlib
+# carries advisories the BINARY scan reports (GO-2026-5026, -5942, -5972, -6088..-6091,
+# -6218). 1.26.6 is the one value that satisfies both ends.
+#
+# The consequence, stated plainly: if Grafana publishes a validator image built on an
+# older Go patch, this action -- and the release job that calls it -- go red with no
+# commit of ours, because our directive is suddenly above the image's toolchain. That is
+# a known fragility of tracking `:latest` (below) while `govulncheck-scan-failed` is
+# armed as an error in .github/plugin-validator.yaml. When it happens, check the image's
+# `go version` and move the directive; the repo did not break. Changing the directive is
+# CI-affecting in both directions.
 # (History: for a few days we declared 1.27.1 against an image whose govulncheck was a
 # mismatched 1.26 build and could scan no source at all -- grafana/plugin-validator issue
 # #827, fixed by PR #851 and released in v0.49.0.)

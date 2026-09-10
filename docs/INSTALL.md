@@ -4,6 +4,9 @@ How to get the plugin into a Grafana you already run.
 
 Catalog publication comes later; until then, install by one of the routes below.
 
+The URLs below pin **v0.1.0**, the newest release; they are updated when a release is
+tagged.
+
 ## Before you start
 
 **Grafana 12.3 or newer** (`grafanaDependency: ">=12.3.0"` in `plugin.json`).
@@ -38,7 +41,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GF_INSTALL_PLUGINS: "https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.1/quix-quixlakehouse-datasource-0.1.1.zip;quix-quixlakehouse-datasource"
+      GF_INSTALL_PLUGINS: "https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.0/quix-quixlakehouse-datasource-0.1.0.zip;quix-quixlakehouse-datasource"
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "quix-quixlakehouse-datasource"
 ```
 
@@ -56,7 +59,7 @@ environment use route 2 or 3.
 For a Grafana you administer directly:
 
 ```bash
-grafana-cli --pluginUrl https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.1/quix-quixlakehouse-datasource-0.1.1.zip \
+grafana-cli --pluginUrl https://github.com/quixio/quixlakehouse-datasource/releases/download/v0.1.0/quix-quixlakehouse-datasource-0.1.0.zip \
   plugins install quix-quixlakehouse-datasource
 
 sudo systemctl restart grafana-server
@@ -72,7 +75,7 @@ Grafana finds plugins by directory name, so unzipping to `dist/` produces a plug
 is silently never listed.
 
 ```bash
-unzip quix-quixlakehouse-datasource-0.1.1.zip -d /var/lib/grafana/plugins/
+unzip quix-quixlakehouse-datasource-0.1.0.zip -d /var/lib/grafana/plugins/
 chmod +x /var/lib/grafana/plugins/quix-quixlakehouse-datasource/gpx_*
 sudo systemctl restart grafana-server
 ```
@@ -89,7 +92,7 @@ appears, and every query fails — because only the frontend half is running.
 Each release ships a `.sha1` beside the zip:
 
 ```bash
-sha1sum -c quix-quixlakehouse-datasource-0.1.1.zip.sha1
+sha1sum -c quix-quixlakehouse-datasource-0.1.0.zip.sha1
 ```
 
 ---

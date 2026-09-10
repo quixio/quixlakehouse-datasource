@@ -1,20 +1,27 @@
 # Datasource provisioning template. Rendered by deploy/entrypoint.sh, which replaces
 # the __PLACEHOLDER__ tokens from environment variables.
 #
-# Rendered only when there is no Grafana database to restore -- in practice, the first
-# boot of a given state volume. The entrypoint copies Grafana's SQLite database out to
-# that volume while it runs and restores it before Grafana starts, so on every later
-# boot the datasource already exists, with whatever was typed into the UI, and this
-# template is not rendered at all. The environment variables SEED the datasource; they
-# do not keep re-applying to it. (With no state volume there is never anything to
-# restore, so it is rendered every boot and UI edits do not survive -- see
-# deploy/README.md.)
+# Every placeholder that carries a value from the environment sits inside a
+# SINGLE-QUOTED YAML scalar, and the entrypoint escapes each value for both sed and
+# YAML before substituting it (see render_escape there). Do not unquote them: a token
+# or URL containing '#', ': ', or a leading '{', '[', '*' or '!' would otherwise parse
+# as something other than a string, or disappear into a comment.
+#
+# Rendered only when the database the entrypoint is about to hand Grafana has no
+# datasource with this uid -- in practice the first boot of a given state volume, plus
+# the recovery cases where the row was deleted in the UI or QUIXLAKE_FORCE_PROVISION is
+# set. The entrypoint copies Grafana's SQLite database out to that volume while it runs
+# and restores it before Grafana starts, so on every later boot the datasource already
+# exists, with whatever was typed into the UI, and this template is not rendered at all.
+# The environment variables SEED the datasource; they do not keep re-applying to it.
+# (With no state volume there is never anything to restore, so it is rendered every boot
+# and UI edits do not survive -- see deploy/README.md.)
 apiVersion: 1
 
 datasources:
   - name: QuixLakeHouse
     # Must equal the plugin id, or Grafana logs "datasource type not found".
-    type: __PLUGIN_ID__
+    type: '__PLUGIN_ID__'
     uid: quixlakehouse
     access: proxy
     isDefault: true
@@ -23,7 +30,7 @@ datasources:
     # This is Quix__Lakehouse__Query__Url: the PUBLIC lh-query host. Note it is NOT
     # CATALOG_URL or QUIX_LAKE_URL, which are legacy aliases for the in-cluster
     # Iceberg catalog and will not serve /query.
-    url: __QUIXLAKE_URL__
+    url: '__QUIXLAKE_URL__'
     jsonData:
       unionByName: true
       timeoutSeconds: 60
@@ -31,7 +38,7 @@ datasources:
       # Encrypted by Grafana at rest and only ever decrypted for the backend process;
       # the browser never receives it back. This is the security gain over the
       # frontend-only JSON datasource it replaces.
-      token: __QUIXLAKE_TOKEN__
+      token: '__QUIXLAKE_TOKEN__'
     # Editable so the URL and token can be corrected from Connections > Data Sources
     # without a redeploy, and those edits now survive: they live in the Grafana
     # database, which the entrypoint copies to the state volume and restores on boot.

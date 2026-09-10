@@ -12,7 +12,7 @@ catalog submission, no review queue. That only becomes necessary for Grafana Clo
 | File | Purpose |
 | --- | --- |
 | `Dockerfile` | 3-stage build: frontend → Go backend → stock Grafana with both baked in |
-| `entrypoint.sh` | Restores Grafana's database from the state volume if it passes an integrity check, seeds the datasource on first boot, starts the 10-second backup loop, then execs Grafana |
+| `entrypoint.sh` | Restores Grafana's database from the state volume if it passes an integrity check, seeds the datasource when that database has no datasource row, starts the 10-second backup loop, then execs Grafana |
 | `provisioning/datasources/quixlakehouse.yml.tpl` | Datasource template with `__PLACEHOLDER__` tokens |
 | `../app.yaml` | Quix application descriptor (at repo root, so the build context is the repo) |
 
@@ -175,11 +175,56 @@ only a result of exactly `ok` is accepted. Both checks run on container-local di
 because a database cannot be *opened* on the CIFS volume at all (below) — the snapshot
 is taken locally and then copied over, and the restore is copied down and checked
 before it is moved into place. The transfer goes to a `.tmp` beside the target and is
-renamed, so a restore never reads a half-written file, and every tick of the loop takes
-an `flock` on the state volume so two containers cannot interleave. A tick that cannot
-take the lock is **skipped and retried on the next one** — losing the race to an
-overlapping redeploy does not disable backups for the life of the container — and that
-is logged once rather than every ten seconds.
+renamed, so a restore never reads a half-written file. Every sqlite3 call carries a
+10-second busy timeout, so a snapshot's read lock makes Grafana's concurrent writes
+*wait* rather than fail with `database is locked`. Stale `-journal`, `-wal` and `-shm`
+files are deleted before a restored database is moved into place: a `docker restart`
+reuses the writable layer, and a hot journal belonging to the previous database would
+otherwise roll foreign pages into the file that was just restored.
+
+Every file written along the way — the staged snapshot, the `.tmp` on the volume and the
+restored live database — is `chmod 600`, because each is a whole Grafana database
+carrying the encrypted API token. A CIFS mount will very likely ignore the mode, which
+is exactly why `GF_SECURITY_SECRET_KEY` (below) is the control that actually travels
+with the file.
+
+**A tick whose database has not changed is skipped**, size and mtime compared against
+the last copy — three full passes over the file every ten seconds for a Grafana nobody
+is editing is pure CIFS traffic. The first tick after boot always runs.
+
+**The `flock` is probed at startup, not assumed.** It is taken on the same CIFS-backed
+volume this design documents as unable to grant SQLite's locks, so trusting it would be
+the one assumption we already know not to make: if the share refuses it, every tick
+exits "held by another container" and *nothing is ever backed up*, while the boot log
+has already promised a copy every ten seconds. At startup the entrypoint takes the lock
+and checks that a second, independent process is refused it. Three outcomes: usable, in
+which case each tick takes it; contended, which is only ever reported when the
+ownership marker names another host; or unsupported — no `flock`, an error, or a share
+that accepts the call and enforces nothing — in which case it says so and **keeps
+backing up without the lock**. A single replica has nothing to serialise against, and
+no backup at all is strictly worse than an unserialised one.
+
+**Two containers on one volume are ordered by an ownership marker, imperfectly.** Quix
+state is shared between replicas and an overlapping redeploy puts two containers on the
+same volume; a lock only makes them take turns, and the outgoing container's next tick
+writes its now-stale database over the incoming one's edits. So each container writes
+`<state>/grafana/.backup.owner` with its hostname and boot time on its first successful
+tick, and any container that finds the marker naming a *different* host with a *newer*
+boot time stops backing up for good and logs it once. Newest boot wins.
+
+This narrows the window; it does not close it. Between the moment the incoming
+container claims the marker and the moment the outgoing one next reads it, both are
+still copying, and the outgoing one can land last. A copy is atomic — the reader never
+sees a half-written file — so the loss is bounded by one tick of the incoming
+container's edits, not corruption. Closing it properly needs a fencing protocol
+(generation numbers, or a lease the writer must renew) and that is deliberately out of
+scope: the deployment is single-replica, and the exposure is the few seconds of an
+overlapping redeploy.
+
+A failing backup is warned about on its first failure and then **re-announced roughly
+every 30 minutes** with its consecutive-failure count, so a volume that fills or goes
+read-only at hour three is not reported only once at hour three. The recovery line says
+how many ticks were missed.
 
 **A copy that fails its integrity check is not restored.** It is renamed aside to
 `<state>/grafana/grafana.db.corrupt-<UTC timestamp>`, the path is logged, and Grafana
@@ -188,6 +233,11 @@ once the copy is known bad, so a sound one replaces it within ten seconds. A cop
 cannot be *read* at all is the other case — nothing is known about it, so backups are
 switched **off** for that container rather than overwriting a possibly-good copy with
 the empty database Grafana is about to create.
+
+**Quarantined copies are pruned to the newest three.** `grafana.db.corrupt-*` and
+`grafana.db.skipped-*` are whole databases on a volume provisioned at 1 GB, so each
+time one is written the older ones beyond the newest three are deleted and the deletion
+is logged. Copy anything you intend to keep off the volume.
 
 **Why a copy and not the live database.** The obvious move — point `GF_PATHS_DATA` at
 the state mount — does not work and will waste a day if you retry it. The volume is
@@ -209,8 +259,12 @@ shutdown copy never actually ran (`su` does not forward signals to its child, an
 supervising shell died inside its own trap), so the mechanism that was supposed to
 guarantee zero loss was in practice writing nothing at all.
 
-One snapshot is taken immediately at boot, so a container stopped inside the first ten
-seconds still leaves a usable database.
+**The first snapshot is taken ten seconds in, not at boot.** It used to be taken before
+the loop's first sleep, which dropped its read lock into the middle of Grafana's
+startup migration and provisioning burst — the densest write window of the container's
+life — and made those writes fail. A container stopped inside its first ten seconds
+therefore leaves what the *previous* container backed up, which is all it had anyway:
+nothing has been typed into this one yet.
 
 **State must be enabled on the deployment.** The entrypoint reads
 `Quix__Deployment__State__Path`, which Quix injects only when the deployment has
@@ -221,15 +275,27 @@ the old behaviour, re-seeding the datasource from the environment every time and
 forgetting everything else. This is deliberately a warning and not a fatal error —
 an earlier version aborted here and took the deployment down.
 
+**When the datasource is seeded.** The entrypoint asks the database it is about to hand
+Grafana whether it already holds a datasource with uid `quixlakehouse`, and renders the
+provisioning template only when it does not. The question is deliberately about the
+row, not about whether a database was restored: a snapshot taken in the seconds before
+Grafana committed that row restores clean and passes its integrity check while
+containing no datasource at all, and gating on the restore left such a deployment
+permanently without one — as did deleting the datasource in the UI. A query error also
+counts as "not there" and seeds, because re-seeding a datasource that does exist costs
+one UI edit, while failing to seed one that does not leaves nothing to query with.
+
 `QUIXLAKE_FORCE_PROVISION=true` re-seeds the datasource from the environment on the
-next boot, overwriting UI edits. It is the way back from a datasource edited into a
-broken state.
+next boot even when the row is present, overwriting UI edits. It is the way back from a
+datasource edited into a broken state.
 
 `QUIXLAKE_SKIP_RESTORE=true` (`1`, `yes`, `on` also work) skips the restore entirely
 and starts from an empty database. It is the way out of a copy that passes its
-integrity check but still wedges Grafana — a half-applied migration, say. Backups stay
-on, so the copy on the volume is **overwritten within ten seconds**; move it aside
-first if you want to keep it.
+integrity check but still wedges Grafana — a half-applied migration, say. The copy is
+**renamed aside** to `grafana.db.skipped-<UTC timestamp>` first, exactly as a corrupt
+one is: backups stay on, so leaving it under its own name would have destroyed the very
+file the operator chose not to restore, within ten seconds and long before anyone read
+the log line about it.
 
 ### `GF_SECURITY_SECRET_KEY` is required, and must be set before the first boot
 
@@ -245,6 +311,28 @@ written with the old key become undecryptable, and the datasource token has to b
 re-entered in Connections > Data Sources. The entrypoint warns at boot when the key is
 unset while persistence is on — a warning, not a refusal to start, because a fatal
 check on a missing variable took this deployment down once already.
+
+### The image starts as root, and drops to uid 472 before Grafana
+
+`deploy/Dockerfile` declares **no `USER 472`**, deliberately: the Quix state volume is
+mounted owned by root, and only root can create the Grafana directory on it and copy
+the database in and out. The entrypoint runs as root, does that work, and then drops to
+uid 472 with `su` immediately before starting Grafana — so the server itself is
+unprivileged, exactly as in the stock image.
+
+Two consequences for anyone running this image outside Quix:
+
+- **A cluster enforcing `runAsNonRoot: true`, or the restricted Pod Security Standard,
+  will refuse to start it.** The image's declared user is root and nothing in the pod
+  spec can see that the entrypoint gives that up a second later. Either grant this
+  workload an exception, or run it without the state volume — it boots fine as uid 472
+  with `--user`, it just has nowhere to persist to and behaves as it did before.
+- **Overriding the entrypoint lands you as root.** `docker exec`, a compose `command:`
+  or a Kubernetes `command:` all bypass the `su`, so whatever they start runs
+  privileged.
+
+This is intended behaviour rather than an oversight, but the image is published, so the
+default is documented here.
 
 ### The admin password can no longer be rotated through Quix
 
