@@ -6,7 +6,33 @@ All notable changes to this plugin are documented here. Versions follow
 Pre-1.0 deliberately: alerting works but is not yet demonstrated end to end with a
 provisioned rule, and `maxDataPoints` is not pushed down.
 
-## 0.0.9 - unreleased
+## 0.1.0 - unreleased
+
+### Changed
+
+- **Go toolchain 1.26.8 → 1.27.1**, and the deploy image `golang:1.26-alpine` →
+  `golang:1.27-alpine`. This is an alignment move, not a fix for anything the plugin
+  does: Grafana's plugin-review runner has Go 1.27 on PATH, and running a minor behind
+  it means the toolchain that validates a catalog submission is not the one we build
+  and test with. Nothing in the dependency graph required it — the Grafana Go SDK asks
+  for at most 1.26.5 and arrow-go for 1.25.0 — so no code changed with it. The 0.0.9
+  entry below still says `Go 1.25.5 → 1.26.8`; that is left as written, because it
+  records what 0.0.9 shipped. (sc-74412)
+- **Our plugin-validator gate now treats `govulncheck-scan-failed` as a warning rather
+  than an error**, in `.github/plugin-validator.yaml`. The govulncheck binary inside
+  `grafana/plugin-validator-cli` is built with Go 1.26, so against a module declaring
+  1.27 its *source* scan aborts before it inspects anything ("uses version go1.26 of
+  the source-processing packages but runs version go1.27 of `go list`"). This is
+  upstream `grafana/plugin-validator` issue #827; the fix, PR #851, merged 2026-09-09
+  but is not in a release yet. Staying on Go 1.26 would not have avoided it, because
+  Grafana's own runner is already on 1.27 and their scan fails the same way — the
+  2026-09-07 submission report carries that exact line. The downgrade is scoped as
+  narrowly as we could make it: `govulncheck-issue-found` stays an **error**, so a real
+  vulnerability still blocks the build, and the analyzer is not disabled, so the binary
+  scan of the packaged zip keeps running. It reverts to `error` as soon as a validator
+  image built after 2026-09-09 is published. (sc-74412)
+
+## 0.0.9 - 2026-09-09
 
 ### Changed
 
