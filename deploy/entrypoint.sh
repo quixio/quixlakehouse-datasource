@@ -22,9 +22,12 @@
 # being opened there is not. GF_PATHS_DATA is therefore deliberately left at the image
 # default, on container-local disk, and only the copy travels.
 #
-# That same missing lock support is why the backup loop PROBES flock at startup instead
-# of trusting it (see probe_lock): a share that refuses flock would otherwise turn every
-# tick into "held by another container" and back nothing up for the life of the pod.
+# That same missing lock support is why the backup loop treats flock as BEST EFFORT. It
+# probes once at startup whether a lock is real (see probe_lock_usable), and a tick that
+# cannot take one copies anyway: a share that refuses flock must never be able to turn
+# every tick into "held by another container" and back nothing up for the life of the
+# pod. The lock orders two overlapping containers; it does not make the volume safe for
+# them, and nothing here does -- run a single replica. See deploy/README.md.
 #
 # Grafana is a stock image with no code of ours in it, so this shim is also the only
 # place the Quix-injected credentials can be turned into a configured datasource.
@@ -62,11 +65,9 @@ COPY_TIMEOUT=120
 # not only in the boot log nobody is still tailing.
 FAIL_REWARN_TICKS=$(( 30 * 60 / BACKUP_INTERVAL ))
 
-# Identity for the ownership marker on the state volume (see owner_taken_over). Boot
-# time, not tick time: the newest container wins, and it must not keep re-winning
-# against itself.
+# Names this container's staging file on the shared state volume, so that two containers
+# cannot cp into one path and interleave (see copy_db_to_state).
 HOST_ID="$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo unknown)"
-BOOT_TS="$(date -u +%s)"
 
 # The image deliberately has no USER line (see deploy/Dockerfile), so this normally
 # runs as root and hands ownership to 472 as it goes. Someone running the image with
@@ -122,9 +123,14 @@ db_has_datasource() {
 # quixdev-global and rejects cross-environment SDK tokens -- the exact failure that
 # derailed billing auth. Quix__Lakehouse__Query__AuthToken is the credential minted
 # for this purpose.
+#
+# CR and LF are stripped here, at the only place these values are resolved. A token
+# pasted into the Quix portal with a trailing newline is common, and it would otherwise
+# reach render_escape, which cannot escape a newline for sed: the render dies with
+# "unterminated `s' command" and, under set -eu, the container never starts.
 # ---------------------------------------------------------------------------
-QUIXLAKE_URL="${Quix__Lakehouse__Query__Url:-${QUIXLAKE_URL:-}}"
-QUIXLAKE_TOKEN="${Quix__Lakehouse__Query__AuthToken:-${QUIXLAKE_TOKEN:-}}"
+QUIXLAKE_URL="$(printf '%s' "${Quix__Lakehouse__Query__Url:-${QUIXLAKE_URL:-}}" | tr -d '\r\n')"
+QUIXLAKE_TOKEN="$(printf '%s' "${Quix__Lakehouse__Query__AuthToken:-${QUIXLAKE_TOKEN:-}}" | tr -d '\r\n')"
 
 # Fail loudly and specifically. The failure mode this prevents is a Grafana that
 # boots fine but whose datasource cannot connect, with nothing in the logs pointing
@@ -158,8 +164,8 @@ QUIXLAKE_URL="${QUIXLAKE_URL%/}"
 STATE_DIR="${Quix__Deployment__State__Path:-}"
 STATE_GRAFANA=""
 STATE_DB=""
+STATE_TMP=""
 BACKUP_LOCK=""
-BACKUP_OWNER=""
 PERSIST=0
 
 if [ -z "$STATE_DIR" ]; then
@@ -173,8 +179,9 @@ if [ -z "$STATE_DIR" ]; then
 else
   STATE_GRAFANA="${STATE_DIR}/grafana"
   STATE_DB="${STATE_GRAFANA}/grafana.db"
+  # Per host, never shared: see copy_db_to_state.
+  STATE_TMP="${STATE_DB}.tmp.${HOST_ID}"
   BACKUP_LOCK="${STATE_GRAFANA}/.backup.lock"
-  BACKUP_OWNER="${STATE_GRAFANA}/.backup.owner"
   if mkdir -p "$STATE_GRAFANA" 2>/dev/null; then
     PERSIST=1
     echo "quix-entrypoint: persistence ON, database copy at ${STATE_DB}"
@@ -256,6 +263,17 @@ prune_quarantine() {
   return 0
 }
 
+# Deletes the live database and anything SQLite would recover into it. Called by every
+# path that announces "starting with an empty database": a docker restart reuses the
+# writable layer, so without this Grafana reopens the very database that was skipped,
+# quarantined or judged unreadable -- while the only good copy has just been renamed
+# aside -- and the log line is a lie. Also called before a restored file is moved into
+# place, where a hot journal belonging to the PREVIOUS database would otherwise roll
+# foreign pages into it on open.
+remove_live_db() {
+  rm -f "$LIVE_DB" "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # Restore, before Grafana starts and therefore before it opens the database.
 #
@@ -295,6 +313,7 @@ if [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ] && [ "$SKIP_RESTORE" = "1" ]; then
   SKIPPED_DB="${STATE_DB}.skipped-$(date -u +%Y%m%dT%H%M%SZ)"
   echo "quix-entrypoint: WARNING: QUIXLAKE_SKIP_RESTORE is set, so ${STATE_DB} is NOT" >&2
   echo "quix-entrypoint: restored and Grafana starts with an empty database." >&2
+  remove_live_db
   if mv -f "$STATE_DB" "$SKIPPED_DB" 2>/dev/null; then
     echo "quix-entrypoint: The skipped copy is kept at ${SKIPPED_DB}. Backups stay ON and" >&2
     echo "quix-entrypoint: write a fresh ${STATE_DB} within ${BACKUP_INTERVAL}s; the kept" >&2
@@ -311,6 +330,7 @@ elif [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ]; then
   rm -f "${LIVE_DB}.restore" 2>/dev/null || true
   if ! timeout "$COPY_TIMEOUT" cp "$STATE_DB" "${LIVE_DB}.restore"; then
     rm -f "${LIVE_DB}.restore" 2>/dev/null || true
+    remove_live_db
     PERSIST=0
     echo "quix-entrypoint: WARNING: could not read ${STATE_DB}. Starting with an" >&2
     echo "quix-entrypoint: empty database and seeding the datasource from the environment." >&2
@@ -320,18 +340,16 @@ elif [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ]; then
     # 600 before the rename, which preserves it: this file is a full Grafana database
     # carrying the encrypted lakehouse token, and Grafana as its owner needs no wider.
     chmod 600 "${LIVE_DB}.restore" 2>/dev/null || true
-    # A docker restart reuses the writable layer, so a hot journal belonging to the
-    # PREVIOUS database can still be sitting beside it. SQLite would roll those pages
-    # into the file we just restored -- pages from a different database -- and corrupt
-    # it on open. The restored file is a complete, checked database and needs no
-    # journal of its own.
-    rm -f "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+    # The restored file is a complete, checked database and needs no journal of its
+    # own; anything left beside it belongs to a previous one.
+    remove_live_db
     mv -f "${LIVE_DB}.restore" "$LIVE_DB"
     if [ "$IS_ROOT" = "1" ]; then chown 472:0 "$LIVE_DB"; fi
     RESTORED=1
     echo "quix-entrypoint: restored Grafana database from ${STATE_DB} ($(db_size "$LIVE_DB") bytes, integrity_check ok)"
   else
     rm -f "${LIVE_DB}.restore" 2>/dev/null || true
+    remove_live_db
     CORRUPT_DB="${STATE_DB}.corrupt-$(date -u +%Y%m%dT%H%M%SZ)"
     echo "quix-entrypoint: WARNING: ${STATE_DB} FAILED PRAGMA integrity_check and was NOT" >&2
     echo "quix-entrypoint: restored -- restoring it would crash-loop Grafana on every boot." >&2
@@ -387,6 +405,12 @@ render_escape() {
 }
 
 if [ "$DS_EXISTS" = "1" ] && [ "$FORCE_PROVISION" = "0" ]; then
+  # Not rendering is not enough: a docker restart reuses the writable layer, so the file
+  # rendered on a PREVIOUS boot is still sitting in the target directory and Grafana
+  # re-applies it, overwriting exactly the UI edits this branch exists to preserve.
+  # Removing it does not delete the datasource -- Grafana only removes what a
+  # deleteDatasources block names, and leaves a provisioned one alone when its file goes.
+  rm -f "${TARGET_DIR}/datasources/"* 2>/dev/null || true
   echo "quix-entrypoint: the restored database already has datasource uid=${DATASOURCE_UID};"
   echo "quix-entrypoint: NOT rendering the provisioning template, so a URL or token edited"
   echo "quix-entrypoint: in Connections > Data Sources survives. Set"
@@ -457,17 +481,24 @@ done
 # anything on the volume is touched, for two reasons: the CIFS-backed volume cannot
 # grant the locks SQLite needs to open a database on it -- as a backup destination or
 # for the check -- and copying an already-verified file that nothing is writing to is
-# the one case where a plain cp is sound. That cp goes to a .tmp beside the target and
-# is renamed, so the next container's restore can never read a half-written file.
+# the one case where a plain cp is sound. That cp goes to a per-host .tmp beside the
+# target and is renamed, so a restore can never read a half-written file.
+#
+# The staging name carries the HOSTNAME. It is on the shared volume, where locking may
+# not work at all, so a single shared name lets two containers cp into it at once, each
+# from offset 0, and each then rename the interleaved result over grafana.db -- past the
+# integrity check, which ran on the local stage and never on this file. Per host, the
+# worst two containers can do is overwrite each other's whole, checked snapshots.
 #
 # Both files it writes are chmod 600: each is a full Grafana database carrying the
 # encrypted lakehouse token. The CIFS mount may ignore the mode on the copy it ends up
 # holding, which is exactly why GF_SECURITY_SECRET_KEY matters more than the bits do.
 #
-# Its only caller is backup_tick below.
+# Its only caller is backup_worker below. Exit status: 0 copied, 5 there is nothing to
+# copy yet, anything else a failure.
 # ---------------------------------------------------------------------------
 copy_db_to_state() {
-  [ -f "$LIVE_DB" ] || return 0
+  [ -f "$LIVE_DB" ] || return 5
   rm -f "$BACKUP_STAGE" 2>/dev/null || true
   if ! sqlite_run "$LIVE_DB" ".backup '${BACKUP_STAGE}'"; then
     rm -f "$BACKUP_STAGE" 2>/dev/null || true
@@ -478,60 +509,13 @@ copy_db_to_state() {
     rm -f "$BACKUP_STAGE" 2>/dev/null || true
     return 1
   fi
-  if ! timeout "$COPY_TIMEOUT" cp "$BACKUP_STAGE" "${STATE_DB}.tmp"; then
-    rm -f "$BACKUP_STAGE" "${STATE_DB}.tmp" 2>/dev/null || true
+  if ! timeout "$COPY_TIMEOUT" cp "$BACKUP_STAGE" "$STATE_TMP"; then
+    rm -f "$BACKUP_STAGE" "$STATE_TMP" 2>/dev/null || true
     return 1
   fi
-  chmod 600 "${STATE_DB}.tmp" 2>/dev/null || true
+  chmod 600 "$STATE_TMP" 2>/dev/null || true
   rm -f "$BACKUP_STAGE" 2>/dev/null || true
-  mv -f "${STATE_DB}.tmp" "$STATE_DB" || return 1
-}
-
-# ---------------------------------------------------------------------------
-# Ownership marker. Quix state is shared between replicas, and an overlapping redeploy
-# puts two containers on the same volume. A lock only serialises them: they still take
-# turns, and the OUTGOING container's next tick writes its now-stale database over the
-# incoming one's edits.
-#
-# This narrows that window; it does not close it. A full fencing protocol is out of
-# scope. The rule is "newest boot wins": each container claims the marker on its first
-# successful tick, and any container that finds the marker naming a DIFFERENT host with
-# a NEWER boot time stops backing up for good. The residual race -- both containers
-# ticking between the claim and the next read -- is documented in deploy/README.md.
-# ---------------------------------------------------------------------------
-owner_host() {
-  _line="$(cat "$BACKUP_OWNER" 2>/dev/null || true)"
-  printf '%s' "${_line%% *}"
-}
-
-owner_taken_over() {
-  [ -n "$BACKUP_OWNER" ] || return 1
-  [ -f "$BACKUP_OWNER" ] || return 1
-  _line="$(cat "$BACKUP_OWNER" 2>/dev/null || true)"
-  _host="${_line%% *}"
-  _ts="${_line##* }"
-  [ -n "$_host" ] || return 1
-  [ "$_host" != "$HOST_ID" ] || return 1
-  # An unparsable or half-written marker is not evidence of anything.
-  case "$_ts" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$_ts" -gt "$BOOT_TS" ]
-}
-
-claim_ownership() {
-  [ "$owner_claimed" = "0" ] || return 0
-  printf '%s %s\n' "$HOST_ID" "$BOOT_TS" > "$BACKUP_OWNER" 2>/dev/null || true
-  chmod 600 "$BACKUP_OWNER" 2>/dev/null || true
-  return 0
-}
-
-# One tick's work, run under the lock when there is one. Its exit status is the tick's
-# outcome, read by backup_worker: 0 copied, 4 another container has taken over,
-# anything else a failed copy.
-backup_tick() {
-  if owner_taken_over; then return 4; fi
-  copy_db_to_state || return 1
-  claim_ownership
-  return 0
+  mv -f "$STATE_TMP" "$STATE_DB" || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -539,58 +523,41 @@ backup_tick() {
 #
 # The reason the live database cannot live on the state mount at all is that CIFS
 # cannot grant SQLite's POSIX locks, so taking flock on that same mount on faith is
-# precisely the assumption this design already knows to distrust. If the share refuses
-# it, every tick exits "held by another container" and nothing is ever backed up, while
-# the boot log has already promised a copy every ${BACKUP_INTERVAL}s.
+# precisely the assumption this design already knows to distrust. A share that accepts
+# flock() and enforces nothing between processes is otherwise indistinguishable from a
+# working lock, so the probe checks enforcement: it takes the lock and requires a
+# second, independent process to be REFUSED it.
 #
-# Three outcomes:
-#   usable      -- we took the lock AND a second, independent process was refused it.
-#   contended   -- we could not take it and the ownership marker names another host,
-#                  which is the only evidence that justifies blaming another container.
-#   unsupported -- everything else: no flock binary, the call errored, or the share
-#                  accepted it and enforced nothing. Back up WITHOUT the lock. A single
-#                  replica is the normal case, and no backup at all is strictly worse
-#                  than an unserialised one.
+# The answer only decides whether ticks bother taking the lock. It is BEST EFFORT
+# either way -- a tick that cannot take one still copies -- because the failure mode
+# that matters is backing nothing up at all, and no arrangement of locks makes one
+# volume safe for two writers. Run a single replica; see deploy/README.md.
 # ---------------------------------------------------------------------------
 LOCK_MODE=none
-LOCK_PROBE=unsupported
 
-probe_lock() {
-  if ! command -v flock >/dev/null 2>&1; then
-    LOCK_PROBE=unsupported
-    return 0
-  fi
-  _rc=0
+probe_lock_usable() {
+  command -v flock >/dev/null 2>&1 || return 1
   (
     exec 9>"$BACKUP_LOCK"
-    flock -n 9 || exit 4
-    # While this process holds it, an independent one must be REFUSED. A filesystem
-    # that accepts flock() and enforces nothing between processes would otherwise be
-    # indistinguishable from a working lock.
+    flock -n 9 || exit 1
     if sh -c 'exec 9>"$1"; flock -n 9' sh "$BACKUP_LOCK" >/dev/null 2>&1; then
-      exit 3
+      exit 1
     fi
     exit 0
-  ) || _rc=$?
-  case "$_rc" in
-    0) LOCK_PROBE=usable ;;
-    3) LOCK_PROBE=unsupported ;;
-    *)
-      _other="$(owner_host)"
-      if [ -n "$_other" ] && [ "$_other" != "$HOST_ID" ]; then
-        LOCK_PROBE=contended
-      else
-        LOCK_PROBE=unsupported
-      fi
-      ;;
-  esac
-  return 0
+  )
 }
 
-# The lock, where there is one, is taken PER TICK and not once for the life of the loop.
-# Whichever container loses the race may well be the one that outlives the other, so it
-# has to keep trying rather than give up for good. The subshell is what makes that
-# possible: the lock is released when it exits and fd 9 closes.
+# The lock, where the filesystem grants one, is taken PER TICK and not once for the life
+# of the loop: whichever container loses a race may well be the one that outlives the
+# other, so it has to keep trying. The subshell is what releases it -- fd 9 closes when
+# it exits.
+#
+# It is BEST EFFORT. A tick that cannot take the lock logs once and then COPIES ANYWAY.
+# Skipping was worse: a lock that cannot be taken is far more often a lock this share
+# does not implement than a second container, and the cost of guessing wrong is a
+# container that persists nothing for its whole life -- the exact harm this loop exists
+# to prevent. Nothing here makes one volume safe for two writers; a single replica is
+# the supported configuration. See 'Persistence' in deploy/README.md.
 #
 # The loop SLEEPS FIRST. Copying before the first sleep raced Grafana's own startup --
 # the snapshot's read lock landing in the middle of the migration and provisioning
@@ -611,9 +578,7 @@ probe_lock() {
 # never fatal -- losing a backup must not take Grafana down.
 backup_worker() {
   lock_warned=0
-  lock_skipped=0
   fail_count=0
-  owner_claimed=0
   last_sig=""
   while :; do
     sleep "$BACKUP_INTERVAL" || true
@@ -631,45 +596,39 @@ backup_worker() {
       (
         exec 9>"$BACKUP_LOCK"
         flock -n 9 || exit 3
-        backup_tick || exit $?
+        copy_db_to_state || exit $?
         exit 0
       ) || rc=$?
+      if [ "$rc" = "3" ]; then
+        if [ "$lock_warned" = "0" ]; then
+          echo "quix-entrypoint: NOTE: ${BACKUP_LOCK} could not be taken, so this tick copies" >&2
+          echo "quix-entrypoint: without it -- the lock is best effort and a backup that never" >&2
+          echo "quix-entrypoint: runs is the worse outcome. Later ticks try the lock again. If" >&2
+          echo "quix-entrypoint: a second container really is on this volume, the two can" >&2
+          echo "quix-entrypoint: overwrite each other's snapshots: run a single replica." >&2
+          echo "quix-entrypoint: Logged once, not on every tick." >&2
+          lock_warned=1
+        fi
+        rc=0
+        copy_db_to_state || rc=$?
+      fi
     else
-      backup_tick || rc=$?
+      copy_db_to_state || rc=$?
     fi
 
     case "$rc" in
       0)
         last_sig="$sig"
-        owner_claimed=1
-        if [ "$lock_warned" = "1" ]; then
-          echo "quix-entrypoint: took ${BACKUP_LOCK}; backups to ${STATE_DB} resumed after"
-          echo "quix-entrypoint: ${lock_skipped} skipped tick(s)."
-          lock_warned=0
-          lock_skipped=0
-        fi
         if [ "$fail_count" -gt 0 ]; then
           echo "quix-entrypoint: backup to ${STATE_DB} is succeeding again after ${fail_count}"
           echo "quix-entrypoint: failed tick(s), about $((fail_count * BACKUP_INTERVAL))s of missed copies."
           fail_count=0
         fi
         ;;
-      3)
-        lock_skipped=$((lock_skipped + 1))
-        if [ "$lock_warned" = "0" ]; then
-          echo "quix-entrypoint: WARNING: ${BACKUP_LOCK} is held by another container, so" >&2
-          echo "quix-entrypoint: this tick is skipped. Retrying every ${BACKUP_INTERVAL}s;" >&2
-          echo "quix-entrypoint: logged once, not on every tick." >&2
-          lock_warned=1
-        fi
-        ;;
-      4)
-        echo "quix-entrypoint: WARNING: '$(owner_host)' booted after this container and has" >&2
-        echo "quix-entrypoint: claimed ${STATE_DB}. Backups from this container STOP here, so" >&2
-        echo "quix-entrypoint: an outgoing container cannot write its older database over the" >&2
-        echo "quix-entrypoint: incoming one's. Nothing changed in THIS Grafana from now on is" >&2
-        echo "quix-entrypoint: persisted; Grafana is otherwise unaffected." >&2
-        return 0
+      5)
+        # Grafana has not created the database yet. Nothing was copied and nothing
+        # failed, so fail_count is left exactly as it stands: a tick that did no work
+        # must not be able to report a failing volume as recovered.
         ;;
       *)
         fail_count=$((fail_count + 1))
@@ -698,28 +657,25 @@ if [ "$PERSIST" = "1" ]; then
   # touch, not ':' with a redirection: ':' is a special built-in, so a redirection
   # error on it exits a non-interactive shell outright and cannot be guarded.
   if touch "$BACKUP_LOCK" 2>/dev/null; then
-    probe_lock
-    case "$LOCK_PROBE" in
-      usable)
-        LOCK_MODE=flock
-        ;;
-      contended)
-        LOCK_MODE=flock
-        echo "quix-entrypoint: ${BACKUP_LOCK} is held right now and the ownership marker" >&2
-        echo "quix-entrypoint: names another container, so ticks are skipped until it is" >&2
-        echo "quix-entrypoint: released." >&2
-        ;;
-      *)
-        LOCK_MODE=none
-        echo "quix-entrypoint: NOTE: ${BACKUP_LOCK} cannot be locked -- flock is missing or" >&2
-        echo "quix-entrypoint: not enforced on this filesystem, which is unsurprising on the" >&2
-        echo "quix-entrypoint: CIFS-backed Quix state volume. Backups continue WITHOUT the" >&2
-        echo "quix-entrypoint: lock: no backup at all would be strictly worse, and a single" >&2
-        echo "quix-entrypoint: replica has nothing to serialise against. With two containers" >&2
-        echo "quix-entrypoint: on one volume they are ordered only by the ownership marker --" >&2
-        echo "quix-entrypoint: see 'Persistence' in deploy/README.md." >&2
-        ;;
-    esac
+    # A container killed mid-copy leaves its staging file on the volume, and nothing
+    # reuses it because the name carries the host. Ours is always ours to delete; any
+    # other that has not been touched for five minutes belonged to a container that is
+    # gone, and each one is a whole database on a 1 GB volume.
+    rm -f "$STATE_TMP" 2>/dev/null || true
+    find "$STATE_GRAFANA" -maxdepth 1 -name 'grafana.db.tmp.*' -mmin +5 -exec rm -f {} \; 2>/dev/null || true
+    if probe_lock_usable; then
+      LOCK_MODE=flock
+    else
+      LOCK_MODE=none
+      echo "quix-entrypoint: NOTE: ${BACKUP_LOCK} cannot be locked -- flock is missing or" >&2
+      echo "quix-entrypoint: not enforced on this filesystem, which is unsurprising on the" >&2
+      echo "quix-entrypoint: CIFS-backed Quix state volume. Backups continue WITHOUT the" >&2
+      echo "quix-entrypoint: lock: no backup at all would be strictly worse, and a single" >&2
+      echo "quix-entrypoint: replica -- the supported configuration -- has nothing to" >&2
+      echo "quix-entrypoint: serialise against. Two containers sharing this volume can" >&2
+      echo "quix-entrypoint: overwrite each other's snapshots with or without the lock;" >&2
+      echo "quix-entrypoint: see 'Persistence' in deploy/README.md." >&2
+    fi
     backup_worker &
     echo "quix-entrypoint: backing up every ${BACKUP_INTERVAL}s via sqlite3's online"
     echo "quix-entrypoint: backup API, integrity-checked before it replaces the copy on"

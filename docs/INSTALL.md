@@ -4,8 +4,9 @@ How to get the plugin into a Grafana you already run.
 
 Catalog publication comes later; until then, install by one of the routes below.
 
-The URLs below pin **v0.1.0**, the newest release; they are updated when a release is
-tagged.
+The URLs below pin **v0.1.0**; they are updated when a release is tagged. Check the
+[releases page](https://github.com/quixio/quixlakehouse-datasource/releases) for the
+newest version.
 
 ## Before you start
 

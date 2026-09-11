@@ -112,6 +112,8 @@ block needs the bind as a sibling of `variables`, not inside it:
     resources:
       cpu: 500
       memory: 1000
+      # Keep this at 1. The state volume is not safe for two containers writing it --
+      # see "Persistence" below.
       replicas: 1
     publicAccess:
       enabled: true
@@ -175,8 +177,13 @@ only a result of exactly `ok` is accepted. Both checks run on container-local di
 because a database cannot be *opened* on the CIFS volume at all (below) — the snapshot
 is taken locally and then copied over, and the restore is copied down and checked
 before it is moved into place. The transfer goes to a `.tmp` beside the target and is
-renamed, so a restore never reads a half-written file. Every sqlite3 call carries a
-10-second busy timeout, so a snapshot's read lock makes Grafana's concurrent writes
+renamed, so a restore never reads a half-written file. **That `.tmp` is named after the
+container's hostname** — `grafana.db.tmp.<hostname>` — because locking on this volume
+may not work at all, and with one shared name two containers write the same path from
+offset 0 and each renames the interleaved result over `grafana.db`; the integrity check
+ran on the local snapshot and would never see it. Staging files left by a container
+that died mid-copy are deleted at the next boot. Every sqlite3 call carries a 10-second
+busy timeout, so a snapshot's read lock makes Grafana's concurrent writes
 *wait* rather than fail with `database is locked`. Stale `-journal`, `-wal` and `-shm`
 files are deleted before a restored database is moved into place: a `docker restart`
 reuses the writable layer, and a hot journal belonging to the previous database would
@@ -192,34 +199,31 @@ with the file.
 the last copy — three full passes over the file every ten seconds for a Grafana nobody
 is editing is pure CIFS traffic. The first tick after boot always runs.
 
-**The `flock` is probed at startup, not assumed.** It is taken on the same CIFS-backed
-volume this design documents as unable to grant SQLite's locks, so trusting it would be
-the one assumption we already know not to make: if the share refuses it, every tick
-exits "held by another container" and *nothing is ever backed up*, while the boot log
-has already promised a copy every ten seconds. At startup the entrypoint takes the lock
-and checks that a second, independent process is refused it. Three outcomes: usable, in
-which case each tick takes it; contended, which is only ever reported when the
-ownership marker names another host; or unsupported — no `flock`, an error, or a share
-that accepts the call and enforces nothing — in which case it says so and **keeps
-backing up without the lock**. A single replica has nothing to serialise against, and
-no backup at all is strictly worse than an unserialised one.
+**The `flock` is best effort, and is probed at startup rather than assumed.** It is
+taken on the same CIFS-backed volume this design documents as unable to grant SQLite's
+locks, so trusting it would be the one assumption we already know not to make. At
+startup the entrypoint takes the lock and checks that a second, independent process is
+refused it; only then do ticks bother taking it. If `flock` is missing, errors, or the
+share accepts the call and enforces nothing, it says so and **keeps backing up without
+the lock** — and a tick that cannot take a lock it does use **still copies**, logging
+once. That direction is deliberate: a lock failure must never be able to disable
+backups, because a container that persists nothing for its whole life is the harm this
+loop exists to prevent, and it is the harm the previous, cleverer arrangement actually
+caused.
 
-**Two containers on one volume are ordered by an ownership marker, imperfectly.** Quix
-state is shared between replicas and an overlapping redeploy puts two containers on the
-same volume; a lock only makes them take turns, and the outgoing container's next tick
-writes its now-stale database over the incoming one's edits. So each container writes
-`<state>/grafana/.backup.owner` with its hostname and boot time on its first successful
-tick, and any container that finds the marker naming a *different* host with a *newer*
-boot time stops backing up for good and logs it once. Newest boot wins.
-
-This narrows the window; it does not close it. Between the moment the incoming
-container claims the marker and the moment the outgoing one next reads it, both are
-still copying, and the outgoing one can land last. A copy is atomic — the reader never
-sees a half-written file — so the loss is bounded by one tick of the incoming
-container's edits, not corruption. Closing it properly needs a fencing protocol
-(generation numbers, or a lease the writer must renew) and that is deliberately out of
-scope: the deployment is single-replica, and the exposure is the few seconds of an
-overlapping redeploy.
+**Run a single replica. The state volume is not safe for concurrent writers.** Quix
+state is shared between replicas, and an overlapping redeploy puts two containers on
+the same volume for a few seconds. Nothing here prevents them clobbering each other:
+the lock may not exist, and even when it does it only makes them take turns, so the
+outgoing container's next tick writes its now-stale database over the incoming one's
+edits. The staging path is per host, so a *torn* copy is not a failure mode — what you
+can lose is whole snapshots, up to and including the last edits made in the outgoing
+container before the handover. Closing that properly needs a fencing protocol
+(generation numbers, or a lease the writer must renew) and is deliberately out of
+scope; an ownership marker that tried to approximate one was written and removed
+because it stopped backups permanently in the case it was meant to protect. Keep
+`replicas: 1`, and do not make a datasource or dashboard edit in the same breath as a
+redeploy.
 
 A failing backup is warned about on its first failure and then **re-announced roughly
 every 30 minutes** with its consecutive-failure count, so a volume that fills or goes
@@ -233,6 +237,12 @@ once the copy is known bad, so a sound one replaces it within ten seconds. A cop
 cannot be *read* at all is the other case — nothing is known about it, so backups are
 switched **off** for that container rather than overwriting a possibly-good copy with
 the empty database Grafana is about to create.
+
+**Every path that starts "with an empty database" deletes the container-local one
+first**, along with its `-journal`, `-wal` and `-shm` files. A `docker restart` reuses
+the writable layer, so without that deletion Grafana reopens the very database the boot
+just refused — quarantined, unreadable or skipped — while the only good copy has been
+renamed aside, and the log line claiming a fresh start is false.
 
 **Quarantined copies are pruned to the newest three.** `grafana.db.corrupt-*` and
 `grafana.db.skipped-*` are whole databases on a volume provisioned at 1 GB, so each
@@ -284,6 +294,13 @@ containing no datasource at all, and gating on the restore left such a deploymen
 permanently without one — as did deleting the datasource in the UI. A query error also
 counts as "not there" and seeds, because re-seeding a datasource that does exist costs
 one UI edit, while failing to seed one that does not leaves nothing to query with.
+
+When it decides not to seed, it also **deletes whatever is already in
+`<provisioning>/datasources/`**. Not rendering a file is not the same as there being no
+file: a `docker restart` reuses the writable layer, so the copy rendered on a previous
+boot is still there and Grafana re-applies it, overwriting exactly the UI edits this
+rule exists to protect. Deleting it does not delete the datasource — Grafana only
+removes what a `deleteDatasources` block names.
 
 `QUIXLAKE_FORCE_PROVISION=true` re-seeds the datasource from the environment on the
 next boot even when the row is present, overwriting UI edits. It is the way back from a

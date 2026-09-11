@@ -26,9 +26,10 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   `<state>/grafana/grafana.db` every **10 seconds**, restoring it before Grafana
   starts. The loop is a background child started before the entrypoint execs Grafana,
   so Grafana still runs as PID 1 and handles its own signals. Each copy is verified,
-  written to a `.tmp` and renamed so a restore never reads a half-written file, and
-  serialised across containers with an `flock` taken per tick where the filesystem
-  grants one.
+  written to a per-host `.tmp` and renamed so a restore never reads a half-written file.
+  Two containers are ordered by an `flock` where the filesystem grants one, but that is
+  best effort only: **run a single replica**, because the volume is not safe for
+  concurrent writers and nothing here makes it so.
 
   Consequences worth knowing. There is **no copy at shutdown**, so any stop — graceful
   or not — loses **up to 10 seconds** of changes, back to the last periodic copy. That
@@ -79,8 +80,8 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   lost the race — any second replica, or the old container during an overlapping
   redeploy — never backed up again for its whole life while the boot log had already
   promised a copy every ten seconds, and its edits were lost. A tick that cannot take
-  the lock is now skipped and retried on the next one; the loss is logged once rather
-  than every ten seconds, and once more when the lock is finally acquired.
+  the lock now copies anyway and logs it once, so no arrangement of locks can stop this
+  container persisting.
 
   Finally, a documentation consequence: `GF_SECURITY_ADMIN_PASSWORD` is applied only
   when Grafana *creates* the admin user, so with a persistent database changing that
@@ -108,11 +109,10 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   at startup whether the lock is both grantable and enforced between processes. Where it
   is not, it says so plainly and keeps backing up **without** it — otherwise every tick
   would have exited "held by another container" and backed up nothing at all, while the
-  boot log promised a copy every ten seconds. Two containers sharing a volume are
-  additionally ordered by an ownership marker beside the lock: newest boot wins, and a
-  container that finds a newer one stops backing up rather than writing its stale
-  database over the incoming container's edits. That narrows the redeploy race; it does
-  not eliminate it, and `deploy/README.md` says so.
+  boot log promised a copy every ten seconds. The lock is **best effort** in both
+  directions: a tick that cannot take one still takes the backup. Two containers sharing
+  one volume can still overwrite each other's snapshots, which is why the supported
+  configuration is a single replica and `deploy/README.md` now says exactly that.
 
   A failing backup is re-announced roughly every 30 minutes with its consecutive-failure
   count instead of once for the life of the container, and the recovery line reports how
@@ -126,6 +126,36 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   the file silently. And a tick whose database is unchanged since the last copy — same
   size and mtime — is skipped outright rather than making three full passes over the
   file for nothing.
+
+  **The container-ownership marker was removed before merge, and with it the failure it
+  caused.** `.backup.owner` was meant to stop an outgoing container overwriting an
+  incoming one's edits, but the lock probe consulted it to tell "lock held by a peer"
+  apart from "lock unsupported", and the marker is never deleted — so on a share where
+  `flock` errors, the second deployment read a marker naming the *previous, dead*
+  container, concluded it was contended, switched ticks to a lock it cannot take, and
+  backed up **nothing for the life of the pod**: precisely the outcome the probe existed
+  to prevent, announced in one log line. It also had no staleness bound, so a marker
+  written by a node with a fast clock silently stopped a *sole* container from backing
+  up until someone deleted the file by hand. Replaced by an honest constraint — **run a
+  single replica; the state volume is not safe for concurrent writers** — and a lock
+  policy that cannot disable backups: `flock` is best effort, a tick that cannot take it
+  copies anyway and logs once.
+
+  Four further fixes from the same review. The volume-side staging path is now
+  **per host** (`grafana.db.tmp.<hostname>`): with locking unsupported — the documented
+  normal case on CIFS — two containers `cp`-ing into one shared `.tmp` interleave from
+  offset 0 and each renames the mixed result over `grafana.db`, past an integrity check
+  that only ever ran on the local snapshot; stale staging files are swept at boot. Every
+  path that announces "starting with an empty database" — `QUIXLAKE_SKIP_RESTORE`, a
+  quarantined corrupt copy, an unreadable one — now **deletes the container-local
+  database** and its `-journal`/`-wal`/`-shm` siblings, because a `docker restart`
+  reuses the writable layer and Grafana was reopening the very database being escaped
+  while the only good copy sat renamed aside. When the datasource is *not* re-seeded,
+  the provisioning directory is **emptied**: the file rendered on a previous boot was
+  still there for Grafana to re-apply, overwriting the UI-edited URL and token this
+  whole change exists to preserve. And CR/LF are stripped from the URL and token where
+  they are resolved — a pasted trailing newline reached `sed` as an unterminated `s`
+  command and, under `set -eu`, the container never started.
 
 ### Changed
 
