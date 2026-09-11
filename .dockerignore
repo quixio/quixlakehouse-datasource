@@ -1,0 +1,34 @@
+# Keeps the Docker build context to what the build actually needs.
+#
+# THE LOAD-BEARING LINE IS `dist/`. Without it a developer's stale dist/ enters the
+# context, deploy/Dockerfile's backend stage does `COPY . .` so that old dist/ lands in
+# /build/dist, mage only ADDS gpx_* binaries beside the files already there, and the
+# runtime stage copies --from=backend SECOND -- so the stale plugin.json overwrites the
+# one webpack just built. The image then reports an old plugin version with no error
+# anywhere. Observed: package.json 0.1.1, a local dist/ left at 0.0.10, image built
+# locally reporting 0.0.10. CI never sees it because a clean checkout has no dist/,
+# which is exactly why it stays hidden.
+#
+# .git/ is deliberately NOT excluded: Go stamps version-control information into the
+# binary from it, and dropping it silently changes what `go version -m` reports on the
+# shipped gpx_* binaries.
+dist/
+node_modules/
+
+# Build and test artefacts that only bloat the context.
+artifacts/
+work/
+ci/
+pkg-root/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+.playwright-mcp/
+*.zip
+*.sha1
+
+# Never ship these into a build context: .env holds local credentials and
+# docs/internal/ is gitignored because this repository is public.
+.env
+docs/internal/
