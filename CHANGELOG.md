@@ -86,7 +86,7 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   Finally, a documentation consequence: `GF_SECURITY_ADMIN_PASSWORD` is applied only
   when Grafana *creates* the admin user, so with a persistent database changing that
   Quix secret has no effect on later boots and a leaked admin password cannot be
-  rotated that way. Rotate in the Grafana UI or with `grafana-cli admin
+  rotated that way. Rotate in the Grafana UI or with `grafana cli admin
   reset-admin-password`; `deploy/README.md` documents it.
 
   **Review hardening, applied before merge.** Every `sqlite3` call now carries
@@ -156,6 +156,52 @@ provisioned rule, and `maxDataPoints` is not pushed down.
   whole change exists to preserve. And CR/LF are stripped from the URL and token where
   they are resolved — a pasted trailing newline reached `sed` as an unterminated `s`
   command and, under `set -eu`, the container never started.
+
+  **Round-three review fixes**, four defects in the deployment shim, two of them
+  reproduced against the real shape.
+
+  The runtime image installs **`coreutils`**, for GNU `timeout` alone. Every copy in the
+  backup loop is wrapped in `timeout`, and `/usr/bin/timeout` in this base image is a
+  **BusyBox symlink**: the applet forks a watchdog and leaves it behind, while the
+  entrypoint `exec`s Grafana, so PID 1 is a Go binary that reaps nothing. The three calls
+  per tick therefore leaked three unreapable zombies every ten seconds — 60 in 12 seconds
+  when measured — filling the PID table in roughly four hours under a 4096-pid cgroup
+  limit, after which `fork()` fails, the backup loop stops and persistence ends silently
+  while Grafana carries on serving. It was a regression introduced by this change: before
+  it there was no `timeout`, no background loop, and PID 1 was the shell, which reaps.
+  GNU `timeout` waits in-process and orphans nothing — the same probe measured 0 zombies,
+  holding.
+
+  **The `grafana.db.previous` rescue slot is now write-once, and is not used on the happy
+  path.** Moving the live database aside instead of deleting it was also called from the
+  *successful restore* path, which runs on every normal boot — so boot N rescued the good
+  database, Grafana created an empty one, and boot N+1 restored cleanly and overwrote the
+  rescue with that empty database. Real user data was lost on the second restart, which
+  is the first thing anyone tries. The successful-restore path now deletes outright,
+  since the file it removes is superseded by a copy that has just passed
+  `integrity_check`; only the three failure paths rescue, they never overwrite an
+  existing `grafana.db.previous`, and they log the path of the rescue they are keeping
+  when they decline. The `-journal`, `-wal` and `-shm` files now move **with** the
+  database rather than being deleted after it, so a rescue is no longer separated from
+  its hot journal and left failing its own integrity check.
+
+  **`QUIXLAKE_SKIP_RESTORE` now turns persistence OFF for the boot** instead of leaving
+  backups on. With backups on, every boot with the flag still set wrote a fresh copy and
+  quarantined it on the next one, and quarantine keeps only the newest three — so the
+  single copy holding real data aged out on the fourth boot, measured across five. The
+  flag is a Quix deployment variable: it survives redeploys and stays set until someone
+  clears it. No backups means no new copy, nothing to quarantine on the next boot and
+  nothing that can push the good one out; the existing copy is still renamed aside, now
+  so that the first boot without the flag does not restore the database that was escaped.
+  The boot log states twice that persistence is off and how to restore it, and
+  `QUIXLAKE_SKIP_RESTORE` and `QUIXLAKE_FORCE_PROVISION` are declared in `app.yaml` as
+  optional single-boot flags, so the portal shows an operator that one is still set.
+
+  **The admin-password recovery command was wrong.** There is no `grafana-cli` binary in
+  the Grafana image — the only binary is `grafana` — so the working form is `grafana cli
+  admin reset-admin-password`. It matters because that is the documented route for a
+  password which, now that the database persists, cannot be rotated through Quix at all.
+  Corrected in `app.yaml` and `deploy/README.md`.
 
 ### Changed
 

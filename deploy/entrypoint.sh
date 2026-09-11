@@ -59,6 +59,13 @@ BACKUP_STAGE="${LIVE_DB}.backup.tmp"
 # loss window. 10s is cheap for a ~1.5 MB file on a CIFS mount.
 BACKUP_INTERVAL=10
 # Every copy is bounded: a wedged CIFS mount must not be able to hang the boot.
+#
+# That bound requires GNU timeout, which deploy/Dockerfile installs (coreutils) for this
+# reason. BusyBox's timeout applet forks a watchdog and leaves it behind, so each call
+# orphans a process onto PID 1 -- and PID 1 here is Grafana, a Go binary that reaps
+# nothing. The three timeout calls every backup tick then accumulate unreapable zombies
+# until the PID table is full and fork() fails, which stops the backup loop. Measured
+# with the busybox applet: 60 zombies in 12 seconds, monotonic.
 COPY_TIMEOUT=120
 # Re-warn about a failing backup roughly every 30 minutes rather than once per
 # container: a volume that fills or goes read-only at hour three deserves a line then,
@@ -189,8 +196,8 @@ else
   if mkdir -p "$STATE_GRAFANA" 2>/dev/null; then
     PERSIST=1
     echo "quix-entrypoint: persistence ON, database copy at ${STATE_DB}"
-    echo "quix-entrypoint: (QUIXLAKE_SKIP_RESTORE=true renames that copy aside and starts"
-    echo "quix-entrypoint: from an empty database instead)"
+    echo "quix-entrypoint: (QUIXLAKE_SKIP_RESTORE=true renames that copy aside, starts from"
+    echo "quix-entrypoint: an empty database, and turns backups OFF for that one boot)"
   else
     echo "quix-entrypoint: WARNING: Quix__Deployment__State__Path is '${STATE_DIR}' but" >&2
     echo "quix-entrypoint: ${STATE_GRAFANA} cannot be created, so persistence is OFF." >&2
@@ -267,30 +274,70 @@ prune_quarantine() {
   return 0
 }
 
-# Deletes the live database and anything SQLite would recover into it. Called by every
-# path that announces "starting with an empty database": a docker restart reuses the
-# writable layer, so without this Grafana reopens the very database that was skipped,
-# quarantined or judged unreadable -- while the only good copy has just been renamed
-# aside -- and the log line is a lie. Also called before a restored file is moved into
-# place, where a hot journal belonging to the PREVIOUS database would otherwise roll
-# foreign pages into it on open.
-remove_live_db() {
-  # The database is moved aside, never deleted. Three of the four callers are
-  # failure paths -- an unreadable or corrupt copy on the volume, or an operator
-  # skipping the restore -- and those fire precisely when the volume is misbehaving
-  # and the LOCAL database is the newer, and possibly only, good one. Deleting it
-  # there would be this design losing data in the one way its own comments promise
-  # it will not. One slot, overwritten each time, so it cannot grow unbounded.
-  if [ -f "$LIVE_DB" ]; then
-    if mv -f "$LIVE_DB" "${LIVE_DB}.previous" 2>/dev/null; then
-      echo "quix-entrypoint: kept the previous local database at ${LIVE_DB}.previous"
-    else
-      rm -f "$LIVE_DB" 2>/dev/null || true
-    fi
+# Deletes the live database and anything SQLite would recover into it, keeping nothing.
+#
+# The ONE caller is the successful-restore path, immediately before a copy that has
+# just passed integrity_check is moved into place. Nothing is rescued there, on purpose:
+# the file being removed is superseded by a verified copy of itself, and this path runs
+# on every normal boot, so rescuing here would overwrite the rescue slot -- with an
+# empty database, on the boot after a failure -- and destroy the only thing in it.
+# A journal is removed with it: one belonging to the PREVIOUS database would otherwise
+# roll foreign pages into the restored file when Grafana opens it.
+discard_live_db() {
+  rm -f "$LIVE_DB" "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+}
+
+# Moves the live database aside, journals and all, and leaves nothing for Grafana to
+# reopen.
+#
+# Called by the three FAILURE paths -- an unreadable copy, a corrupt copy, an operator
+# skipping the restore -- each of which announces "starting with an empty database". A
+# docker restart reuses the writable layer, so without this Grafana reopens the very
+# database the boot refused while the only good copy has just been renamed aside, and
+# the log line is a lie. Those paths also fire precisely when the volume is misbehaving
+# and the LOCAL database is the newer, possibly only, good one, so it is kept rather
+# than deleted.
+#
+# ONE slot, and it is write-once: an existing ${LIVE_DB}.previous is never overwritten.
+# The first rescue is the one holding real data; a second failed boot would only be
+# rescuing whatever Grafana created after the first, so overwriting would replace real
+# data with an empty database -- which is how the previous version of this function lost
+# it. The slot cannot grow unbounded either way.
+rescue_live_db() {
+  if [ ! -f "$LIVE_DB" ]; then
+    rm -f "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+    return 0
   fi
-  # Journals belong to the database that has just been moved aside; leaving one
-  # beside a different database is how a verified file gets corrupted.
-  rm -f "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+
+  if [ -e "${LIVE_DB}.previous" ]; then
+    echo "quix-entrypoint: NOTE: a rescued database is already at ${LIVE_DB}.previous," >&2
+    echo "quix-entrypoint: from an earlier failed boot. It is NOT overwritten -- it is the" >&2
+    echo "quix-entrypoint: one that may still hold real data, while this boot's database is" >&2
+    echo "quix-entrypoint: whatever Grafana created after that failure. This boot's is" >&2
+    echo "quix-entrypoint: discarded instead. Copy ${LIVE_DB}.previous off the container if" >&2
+    echo "quix-entrypoint: you want it: it is on container-local disk and goes with the" >&2
+    echo "quix-entrypoint: container." >&2
+    rm -f "$LIVE_DB" "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+    return 0
+  fi
+
+  if mv -f "$LIVE_DB" "${LIVE_DB}.previous" 2>/dev/null; then
+    # The journals travel WITH the database, under the names SQLite expects beside
+    # ${LIVE_DB}.previous. Deleting them here instead -- which is what this used to do --
+    # separates a rescue from its hot journal, so the rescue can fail integrity_check
+    # and be worthless at exactly the moment someone reaches for it.
+    for _sfx in journal wal shm; do
+      if [ -f "${LIVE_DB}-${_sfx}" ]; then
+        mv -f "${LIVE_DB}-${_sfx}" "${LIVE_DB}.previous-${_sfx}" 2>/dev/null \
+          || rm -f "${LIVE_DB}-${_sfx}" 2>/dev/null || true
+      fi
+    done
+    echo "quix-entrypoint: kept the previous local database at ${LIVE_DB}.previous, with"
+    echo "quix-entrypoint: any journal it had. It is on container-local disk, so copy it"
+    echo "quix-entrypoint: off before this container is replaced."
+  else
+    rm -f "$LIVE_DB" "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -316,11 +363,18 @@ remove_live_db() {
 # a possibly-good copy with the empty database Grafana is about to create -- the one
 # way this design could lose data that a plain ephemeral Grafana would not.
 #
-# QUIXLAKE_SKIP_RESTORE skips all of it and starts empty: the way out of a database
-# that is intact enough to pass integrity_check but still wedges Grafana. The copy is
-# renamed aside exactly as a corrupt one is, because backups stay ON and would
-# otherwise destroy the very file the operator chose not to restore, within
-# ${BACKUP_INTERVAL}s -- long before anyone reads a log line asking them to move it.
+# QUIXLAKE_SKIP_RESTORE skips all of it and starts empty: the way out of a database that
+# is intact enough to pass integrity_check but still wedges Grafana. It also turns
+# PERSISTENCE OFF for that boot. Backups used to stay on, which quarantined a fresh copy
+# on every boot the flag was left set while prune_quarantine keeps only the newest three
+# -- so the one copy holding real data aged out on the fourth boot. The flag is a Quix
+# deployment variable and survives redeploys, so "left set" is the ordinary case rather
+# than a corner one. With no backups there is no new copy, nothing to quarantine on the
+# next boot, and nothing that can push the good one out.
+#
+# The copy on the volume is still renamed aside to grafana.db.skipped-<UTC timestamp>,
+# now for a different reason: once the flag is cleared, the next boot must not restore
+# the very database the operator escaped.
 # ---------------------------------------------------------------------------
 SKIP_RESTORE=0
 case "$(printf '%s' "${QUIXLAKE_SKIP_RESTORE:-}" | tr '[:upper:]' '[:lower:]')" in
@@ -328,28 +382,40 @@ case "$(printf '%s' "${QUIXLAKE_SKIP_RESTORE:-}" | tr '[:upper:]' '[:lower:]')" 
 esac
 
 RESTORED=0
-if [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ] && [ "$SKIP_RESTORE" = "1" ]; then
-  SKIPPED_DB="${STATE_DB}.skipped-$(date -u +%Y%m%dT%H%M%SZ)"
-  echo "quix-entrypoint: WARNING: QUIXLAKE_SKIP_RESTORE is set, so ${STATE_DB} is NOT" >&2
-  echo "quix-entrypoint: restored and Grafana starts with an empty database." >&2
-  remove_live_db
-  if mv -f "$STATE_DB" "$SKIPPED_DB" 2>/dev/null; then
-    echo "quix-entrypoint: The skipped copy is kept at ${SKIPPED_DB}. Backups stay ON and" >&2
-    echo "quix-entrypoint: write a fresh ${STATE_DB} within ${BACKUP_INTERVAL}s; the kept" >&2
-    echo "quix-entrypoint: copy is not overwritten, but only the three most recent" >&2
-    echo "quix-entrypoint: quarantined copies are retained, so move it off the volume if" >&2
-    echo "quix-entrypoint: you need it long-term." >&2
-    prune_quarantine
-  else
-    echo "quix-entrypoint: It could NOT be renamed aside, so the next backup overwrites it" >&2
-    echo "quix-entrypoint: within ${BACKUP_INTERVAL}s. Copy it off the volume now." >&2
+if [ "$PERSIST" = "1" ] && [ "$SKIP_RESTORE" = "1" ]; then
+  # Off before anything else, and regardless of whether there is a copy to skip: the
+  # backup loop is what would recreate ${STATE_DB}, and a recreated copy is what the
+  # next boot with the flag still set would quarantine.
+  PERSIST=0
+  echo "quix-entrypoint: WARNING: QUIXLAKE_SKIP_RESTORE is set: nothing is restored from" >&2
+  echo "quix-entrypoint: ${STATE_GRAFANA}, Grafana starts with an empty database, and" >&2
+  echo "quix-entrypoint: PERSISTENCE IS OFF for this boot -- nothing is copied to the state" >&2
+  echo "quix-entrypoint: volume while the flag is set." >&2
+  rescue_live_db
+  if [ -f "$STATE_DB" ]; then
+    SKIPPED_DB="${STATE_DB}.skipped-$(date -u +%Y%m%dT%H%M%SZ)"
+    if mv -f "$STATE_DB" "$SKIPPED_DB" 2>/dev/null; then
+      echo "quix-entrypoint: The skipped copy is kept at ${SKIPPED_DB} and nothing in this" >&2
+      echo "quix-entrypoint: container will overwrite it. Only the three most recent" >&2
+      echo "quix-entrypoint: quarantined copies are retained, so move it off the volume if" >&2
+      echo "quix-entrypoint: you need it long-term." >&2
+      prune_quarantine
+    else
+      echo "quix-entrypoint: It could NOT be renamed aside, so it stays at ${STATE_DB} and" >&2
+      echo "quix-entrypoint: the first boot without the flag restores it again. Move it off" >&2
+      echo "quix-entrypoint: the volume by hand if that is not what you want." >&2
+    fi
   fi
+  echo "quix-entrypoint: QUIXLAKE_SKIP_RESTORE is a SINGLE-BOOT flag. Clear it in the" >&2
+  echo "quix-entrypoint: deployment's variables and restart to resume persistence. Until" >&2
+  echo "quix-entrypoint: then, every dashboard, alert rule and datasource edit made here is" >&2
+  echo "quix-entrypoint: lost when the container stops." >&2
 elif [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ]; then
   mkdir -p "$GF_DATA_DIR"
   rm -f "${LIVE_DB}.restore" 2>/dev/null || true
   if ! timeout "$COPY_TIMEOUT" cp "$STATE_DB" "${LIVE_DB}.restore"; then
     rm -f "${LIVE_DB}.restore" 2>/dev/null || true
-    remove_live_db
+    rescue_live_db
     PERSIST=0
     echo "quix-entrypoint: WARNING: could not read ${STATE_DB}. Starting with an" >&2
     echo "quix-entrypoint: empty database and seeding the datasource from the environment." >&2
@@ -359,16 +425,20 @@ elif [ "$PERSIST" = "1" ] && [ -f "$STATE_DB" ]; then
     # 600 before the rename, which preserves it: this file is a full Grafana database
     # carrying the encrypted lakehouse token, and Grafana as its owner needs no wider.
     chmod 600 "${LIVE_DB}.restore" 2>/dev/null || true
-    # The restored file is a complete, checked database and needs no journal of its
-    # own; anything left beside it belongs to a previous one.
-    remove_live_db
+    # Deleted, not rescued: this path runs on every normal boot, and the database being
+    # removed is superseded by a verified copy of itself. Rescuing here would spend the
+    # single ${LIVE_DB}.previous slot on every boot and, on the boot after a failure,
+    # overwrite the rescue holding real data with the empty database Grafana created.
+    # The restored file is a complete, checked database and needs no journal of its own;
+    # anything left beside it belongs to a previous one.
+    discard_live_db
     mv -f "${LIVE_DB}.restore" "$LIVE_DB"
     if [ "$IS_ROOT" = "1" ]; then chown 472:0 "$LIVE_DB"; fi
     RESTORED=1
     echo "quix-entrypoint: restored Grafana database from ${STATE_DB} ($(db_size "$LIVE_DB") bytes, integrity_check ok)"
   else
     rm -f "${LIVE_DB}.restore" 2>/dev/null || true
-    remove_live_db
+    rescue_live_db
     CORRUPT_DB="${STATE_DB}.corrupt-$(date -u +%Y%m%dT%H%M%SZ)"
     echo "quix-entrypoint: WARNING: ${STATE_DB} FAILED PRAGMA integrity_check and was NOT" >&2
     echo "quix-entrypoint: restored -- restoring it would crash-loop Grafana on every boot." >&2
@@ -707,6 +777,17 @@ if [ "$PERSIST" = "1" ]; then
     PERSIST=0
     echo "quix-entrypoint: WARNING: cannot create ${BACKUP_LOCK}; persistence is OFF." >&2
   fi
+fi
+
+# Said a second time, immediately before Grafana's own startup noise buries it. A
+# Grafana that persists nothing looks entirely normal from the UI, and the flag is a
+# deployment variable that survives redeploys, so the operator who set it a week ago has
+# no other prompt to clear it.
+if [ "$SKIP_RESTORE" = "1" ]; then
+  echo "quix-entrypoint: REMINDER: QUIXLAKE_SKIP_RESTORE is set. Persistence is OFF for" >&2
+  echo "quix-entrypoint: this boot -- nothing is being backed up to the state volume, and" >&2
+  echo "quix-entrypoint: everything in this Grafana is lost when the container stops." >&2
+  echo "quix-entrypoint: Clear the flag and restart to resume persistence." >&2
 fi
 
 # ---------------------------------------------------------------------------

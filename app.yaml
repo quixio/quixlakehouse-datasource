@@ -30,7 +30,8 @@ variables:
       Grafana's default of "admin". Applied ONLY when Grafana first creates the admin
       user, so now that the database persists on the state volume, changing this value
       has no effect on later boots. Rotate through the Grafana UI, or with
-      grafana-cli admin reset-admin-password.
+      "grafana cli admin reset-admin-password" from a shell in the container -- the
+      image ships no grafana-cli binary, only grafana.
     required: true
 
   # Grafana encrypts secureJsonData -- which is where the datasource's lakehouse token
@@ -54,8 +55,23 @@ variables:
     defaultValue: info
     required: false
 
+  # --- Recovery flags --------------------------------------------------------
+  # Declared here not because anyone sets them routinely, but because they are
+  # deployment variables: once set they survive redeploys, and an undeclared variable
+  # is invisible in the portal. Both change what a boot does with the persisted
+  # database, and leaving either set has consequences that are easy to miss.
+  - name: QUIXLAKE_SKIP_RESTORE
+    inputType: FreeText
+    description: "SINGLE BOOT, then CLEAR IT. Set to true to start from an empty database instead of restoring the copy on the state volume -- the way out of a database that passes its integrity check but still wedges Grafana. The copy is renamed aside to grafana.db.skipped-<timestamp> and PERSISTENCE IS OFF for every boot the flag is set, so nothing this Grafana holds is saved. Clear it and restart to resume persistence."
+    required: false
+
+  - name: QUIXLAKE_FORCE_PROVISION
+    inputType: FreeText
+    description: "SINGLE BOOT, then CLEAR IT. Set to true to re-seed the lakehouse datasource from the environment even though the database already has it -- the way back from a datasource edited into a broken state. It OVERWRITES the URL and token edited in Connections > Data Sources, on this and every later boot while it is set. Clear it and restart once the datasource is good."
+    required: false
+
   # --- BYOX only -------------------------------------------------------------
-  # On dev these four are auto-injected via the blobStorage bind above and must be
+  # On dev these two are auto-injected via the blobStorage bind above and must be
   # left EMPTY here. On BYOX clusters nothing is auto-injected, so set them
   # explicitly. The entrypoint reads the Quix__* names first and falls back to the
   # QUIXLAKE_* names used for local runs.

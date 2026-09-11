@@ -53,7 +53,17 @@ USER root
 # writers, and it is the only such mechanism available in this image. The same binary
 # runs the PRAGMA integrity_check that gates every copy in both directions. Without it
 # the entrypoint disables persistence rather than falling back to cp.
-RUN apk add --no-cache sqlite
+#
+# coreutils is here for ONE binary: GNU timeout, which replaces the busybox applet the
+# base image symlinks at /usr/bin/timeout. BusyBox's timeout cannot be used here. It
+# forks a watchdog child and leaves it behind, and the entrypoint execs Grafana, so PID
+# 1 is a Go binary that reaps nothing -- every orphaned watchdog stays a zombie forever.
+# The backup loop makes three timeout calls every 10 seconds, so the PID table fills in
+# hours, fork() then fails, and the backup loop dies silently while Grafana keeps
+# serving: persistence off, with no error anywhere. Measured in this image: 60 zombies
+# in 12 seconds with the applet, 0 with coreutils. GNU timeout waits in-process and
+# orphans nothing.
+RUN apk add --no-cache sqlite coreutils
 
 COPY --from=frontend /build/dist /var/lib/grafana/plugins/${PLUGIN_ID}
 COPY --from=backend  /build/dist /var/lib/grafana/plugins/${PLUGIN_ID}

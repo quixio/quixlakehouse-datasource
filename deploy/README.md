@@ -171,6 +171,15 @@ measured 12 of 12 clean against a continuous writer. That is why the deploy imag
 installs `sqlite`; if the binary is ever missing at runtime the entrypoint logs loudly
 and turns persistence **off** rather than falling back to `cp`.
 
+The image also installs `coreutils`, for one binary: **GNU `timeout`**, which every copy
+in the loop is wrapped in. BusyBox's `timeout` applet — the base image's default — forks
+a watchdog and leaves it behind, and the entrypoint `exec`s Grafana, so PID 1 is a Go
+binary that reaps nothing. Each tick then leaked three unreapable zombies: 60 in 12
+seconds when measured, filling the PID table in hours, after which `fork()` fails and
+the backup loop dies while Grafana carries on serving. GNU `timeout` waits in-process
+and orphans nothing (0 zombies, holding). Do not drop `coreutils` from the runtime
+stage.
+
 **Both directions are integrity-checked.** Every snapshot is verified before it
 replaces the copy on the volume, and the copy is verified again before it is restored;
 only a result of exactly `ok` is accepted. Both checks run on container-local disk,
@@ -238,11 +247,23 @@ cannot be *read* at all is the other case — nothing is known about it, so back
 switched **off** for that container rather than overwriting a possibly-good copy with
 the empty database Grafana is about to create.
 
-**Every path that starts "with an empty database" deletes the container-local one
+**Every path that starts "with an empty database" clears the container-local one
 first**, along with its `-journal`, `-wal` and `-shm` files. A `docker restart` reuses
-the writable layer, so without that deletion Grafana reopens the very database the boot
-just refused — quarantined, unreadable or skipped — while the only good copy has been
-renamed aside, and the log line claiming a fresh start is false.
+the writable layer, so without that Grafana reopens the very database the boot just
+refused — quarantined, unreadable or skipped — while the only good copy has been renamed
+aside, and the log line claiming a fresh start is false.
+
+On the three **failure** paths that database is moved aside rather than deleted, to
+`grafana.db.previous` **with its journals**, because those paths fire exactly when the
+volume is misbehaving and the local file may be the newer — or the only — good one. The
+rescue slot is **write-once**: an existing `grafana.db.previous` is never overwritten,
+and the boot log says so, naming the file. The first rescue is the one that may hold
+real data, while a second failed boot would only be rescuing the empty database Grafana
+created after the first, so overwriting it is precisely how a rescue gets destroyed. It
+lives on container-local disk and goes when the container does — copy it out if you need
+it. The **successful restore** path deletes instead and keeps nothing: the file it
+removes is being replaced by a verified copy of itself, and that path runs on every
+normal boot, so rescuing there is what would spend the slot.
 
 **Quarantined copies are pruned to the newest three.** `grafana.db.corrupt-*` and
 `grafana.db.skipped-*` are whole databases on a volume provisioned at 1 GB, so each
@@ -309,10 +330,18 @@ datasource edited into a broken state.
 `QUIXLAKE_SKIP_RESTORE=true` (`1`, `yes`, `on` also work) skips the restore entirely
 and starts from an empty database. It is the way out of a copy that passes its
 integrity check but still wedges Grafana — a half-applied migration, say. The copy is
-**renamed aside** to `grafana.db.skipped-<UTC timestamp>` first, exactly as a corrupt
-one is: backups stay on, so leaving it under its own name would have destroyed the very
-file the operator chose not to restore, within ten seconds and long before anyone read
-the log line about it.
+**renamed aside** to `grafana.db.skipped-<UTC timestamp>` first, so the first boot
+without the flag does not restore the very database that was escaped.
+
+**It also turns persistence off for every boot on which it is set**, so treat it as a
+single-boot flag: clear it and restart. Backups used to stay on, and that lost data —
+each boot with the flag still set wrote a fresh copy and quarantined it on the next
+boot, and only the three newest quarantined copies are kept, so the one copy holding
+real data aged out on the fourth boot. It is a deployment variable and survives
+redeploys, so "left set" is the ordinary case rather than a corner one. With backups off
+there is no new copy to quarantine and nothing that can push the good one out; the cost
+is a Grafana that saves nothing while the flag is set, which the boot log says twice and
+which is otherwise invisible from the UI.
 
 ### `GF_SECURITY_SECRET_KEY` is required, and must be set before the first boot
 
@@ -360,8 +389,11 @@ leaked admin password cannot be rotated that way. Rotate it in the Grafana UI
 (profile > change password), or from a shell in the running container:
 
 ```bash
-grafana-cli --homepath /usr/share/grafana admin reset-admin-password '<new-password>'
+grafana cli --homepath /usr/share/grafana admin reset-admin-password '<new-password>'
 ```
+
+`grafana cli`, not `grafana-cli`: the Grafana image ships a single `grafana` binary and
+there is no `grafana-cli` in it, so the older spelling fails with "not found".
 
 Keep the Quix secret in step with whatever you rotate to, so that a state volume which
 is ever wiped comes back with the password you expect.
