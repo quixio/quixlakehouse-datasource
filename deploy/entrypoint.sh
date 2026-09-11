@@ -140,7 +140,11 @@ QUIXLAKE_TOKEN="$(printf '%s' "${Quix__Lakehouse__Query__AuthToken:-${QUIXLAKE_T
 if [ -z "$QUIXLAKE_URL" ] || [ -z "$QUIXLAKE_TOKEN" ]; then
   echo "FATAL: lakehouse credentials missing." >&2
   echo "  Quix__Lakehouse__Query__Url       = ${QUIXLAKE_URL:-<empty>}" >&2
-  echo "  Quix__Lakehouse__Query__AuthToken = ${QUIXLAKE_TOKEN:+<set>}${QUIXLAKE_TOKEN:-<empty>}" >&2
+  # NOT ${VAR:+<set>}${VAR:-<empty>}: when the token IS set those concatenate to
+  # "<set>" followed by the token itself, printing the secret into the deployment
+  # log on every boot of a crash loop.
+  if [ -n "$QUIXLAKE_TOKEN" ]; then TOKEN_STATE="<set>"; else TOKEN_STATE="<empty>"; fi
+  echo "  Quix__Lakehouse__Query__AuthToken = ${TOKEN_STATE}" >&2
   echo "" >&2
   echo "On Quix dev these inject ONLY when the deployment has blobStorage.bind: true" >&2
   echo "(the bind is the injection vehicle for the whole lakehouse bundle, even though" >&2
@@ -271,7 +275,22 @@ prune_quarantine() {
 # place, where a hot journal belonging to the PREVIOUS database would otherwise roll
 # foreign pages into it on open.
 remove_live_db() {
-  rm -f "$LIVE_DB" "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
+  # The database is moved aside, never deleted. Three of the four callers are
+  # failure paths -- an unreadable or corrupt copy on the volume, or an operator
+  # skipping the restore -- and those fire precisely when the volume is misbehaving
+  # and the LOCAL database is the newer, and possibly only, good one. Deleting it
+  # there would be this design losing data in the one way its own comments promise
+  # it will not. One slot, overwritten each time, so it cannot grow unbounded.
+  if [ -f "$LIVE_DB" ]; then
+    if mv -f "$LIVE_DB" "${LIVE_DB}.previous" 2>/dev/null; then
+      echo "quix-entrypoint: kept the previous local database at ${LIVE_DB}.previous"
+    else
+      rm -f "$LIVE_DB" 2>/dev/null || true
+    fi
+  fi
+  # Journals belong to the database that has just been moved aside; leaving one
+  # beside a different database is how a verified file gets corrupted.
+  rm -f "${LIVE_DB}-journal" "${LIVE_DB}-wal" "${LIVE_DB}-shm" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------

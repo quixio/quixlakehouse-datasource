@@ -110,3 +110,32 @@ jobs:
           ignore-unfixed: true
           exit-code: '0'
           format: table
+
+  # deploy/entrypoint.sh is the boot path for every Quix deployment and has grown to
+  # ~700 lines of POSIX sh. Two review rounds found bugs in it that only execute when
+  # something else has already gone wrong -- an unreadable state copy, a failed lock --
+  # which is exactly the code a human reader skims. Nothing else in CI parses it: the
+  # frontend and backend jobs never touch deploy/, and a syntax error here would first
+  # surface as a container that will not boot.
+  #
+  # Blocking, unlike the Trivy job: shellcheck findings on a file this size are
+  # actionable and few, and a parse error is never acceptable.
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # dash, not bash: the script runs under Alpine BusyBox sh, and bash would accept
+      # bashisms that fail in the image.
+      - name: Parse with a POSIX shell
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq dash
+          for f in deploy/entrypoint.sh; do
+            echo "dash -n $f"
+            dash -n "$f"
+          done
+
+      - name: shellcheck
+        run: |
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --shell=sh --severity=warning deploy/entrypoint.sh

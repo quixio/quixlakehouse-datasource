@@ -26,7 +26,11 @@ blobStorage:
 variables:
   - name: GF_SECURITY_ADMIN_PASSWORD
     inputType: Secret
-    description: Grafana admin password. Set this -- the image would otherwise use Grafana's default of "admin".
+    description: Grafana admin password. Set this -- the image would otherwise use
+      Grafana's default of "admin". Applied ONLY when Grafana first creates the admin
+      user, so now that the database persists on the state volume, changing this value
+      has no effect on later boots. Rotate through the Grafana UI, or with
+      grafana-cli admin reset-admin-password.
     required: true
 
   # Grafana encrypts secureJsonData -- which is where the datasource's lakehouse token
