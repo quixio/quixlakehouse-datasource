@@ -70,8 +70,7 @@ jobs:
       # to analyse a module targeting a newer one ("the Go language version used to
       # build golangci-lint is lower than the targeted Go version"). Building from
       # source uses this runner's toolchain, so it tracks go.mod automatically and
-      # cannot drift out of step again -- which matters more now that go.mod asks for
-      # 1.27.1, a minor that prebuilt releases lag behind for weeks.
+      # cannot drift out of step again.
       #
       # /v2 in the module path matches `version: '2'` in .golangci.yml.
       - name: golangci-lint
@@ -111,3 +110,53 @@ jobs:
           ignore-unfixed: true
           exit-code: '0'
           format: table
+
+  # deploy/entrypoint.sh is the boot path for every Quix deployment and has grown to
+  # ~700 lines of POSIX sh. Two review rounds found bugs in it that only execute when
+  # something else has already gone wrong -- an unreadable state copy, a failed lock --
+  # which is exactly the code a human reader skims. Nothing else in CI parses it: the
+  # frontend and backend jobs never touch deploy/, and a syntax error here would first
+  # surface as a container that will not boot.
+  #
+  # Blocking, unlike the Trivy job: shellcheck findings on a file this size are
+  # actionable and few, and a parse error is never acceptable.
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # dash, not bash: the script runs under Alpine BusyBox sh, and bash would accept
+      # bashisms that fail in the image.
+      - name: Parse with a POSIX shell
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq dash
+          for f in deploy/entrypoint.sh deploy/test/entrypoint-test.sh; do
+            echo "dash -n $f"
+            dash -n "$f"
+          done
+
+      - name: shellcheck
+        run: |
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --shell=sh --severity=warning deploy/entrypoint.sh deploy/test/entrypoint-test.sh
+
+  # Exercises deploy/entrypoint.sh's state machine end to end, in a real
+  # container, against dummy lakehouse credentials -- it never touches a real
+  # lakehouse and never asserts on datasource connectivity. It exists because
+  # three review rounds each found a defect in a branch that only executes
+  # after something else already failed (an unreadable state copy, a corrupt
+  # copy, a lock that cannot be taken, a skipped restore left set) -- exactly
+  # the code a human reviewer skims, and none of it reachable by the `shell`
+  # job's dash -n / shellcheck static checks above. Blocking: a regression
+  # here is a boot-time state machine bug on every Quix deployment.
+  entrypoint-state-machine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build image
+        run: docker build -f deploy/Dockerfile -t quixlakehouse-grafana:test .
+
+      - name: run entrypoint state-machine tests
+        run: sh deploy/test/entrypoint-test.sh quixlakehouse-grafana:test

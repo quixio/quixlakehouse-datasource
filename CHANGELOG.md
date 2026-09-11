@@ -6,7 +6,226 @@ All notable changes to this plugin are documented here. Versions follow
 Pre-1.0 deliberately: alerting works but is not yet demonstrated end to end with a
 provisioned rule, and `maxDataPoints` is not pushed down.
 
-## 0.1.0 - unreleased
+## 0.1.1 - unreleased
+
+### Added
+
+- **The Quix deployment now remembers what you type into the datasource settings
+  page.** The URL and the API token entered in Connections > Data Sources — and with
+  them dashboards, alert rules and users, since it is the whole Grafana database —
+  survive a restart or a redeploy. Previously provisioning re-applied on every boot
+  and reverted the URL, and the token was gone with the container's disk. Nothing in
+  the plugin changed; this is entirely `deploy/entrypoint.sh`. (sc-74412)
+
+  The mechanism is a **copy**, not a relocation. Pointing `GF_PATHS_DATA` at the Quix
+  state volume was tried and reversed: the volume is CIFS-backed and cannot grant the
+  exclusive POSIX locks SQLite needs, so Grafana loops forever on its first migration
+  with `SQLITE_BUSY` and never listens — reproduced three times on the real
+  deployment. Ordinary reads, writes, `cp` and `mkdir` on that volume all work, so the
+  live database stays on container-local disk and the entrypoint copies it out to
+  `<state>/grafana/grafana.db` every **10 seconds**, restoring it before Grafana
+  starts. The loop is a background child started before the entrypoint execs Grafana,
+  so Grafana still runs as PID 1 and handles its own signals. Each copy is verified,
+  written to a per-host `.tmp` and renamed so a restore never reads a half-written file.
+  Two containers are ordered by an `flock` where the filesystem grants one, but that is
+  best effort only: **run a single replica**, because the volume is not safe for
+  concurrent writers and nothing here makes it so.
+
+  Consequences worth knowing. There is **no copy at shutdown**, so any stop — graceful
+  or not — loses **up to 10 seconds** of changes, back to the last periodic copy. That
+  is the whole loss window and it is acceptable for a URL and a token that are typed
+  once. Persistence requires `state: enabled: true` on the deployment, which is
+  declared in the pipeline repo's `quix.yaml` — without it Grafana logs a warning and
+  runs exactly as it did before, rather than refusing to start, because an earlier
+  version made that fatal and took the deployment down. The datasource template is now
+  rendered only when the database Grafana is about to open has no datasource row of its
+  own, so seeding no longer overwrites UI edits; `QUIXLAKE_FORCE_PROVISION=true` forces a
+  re-seed from the environment. The deploy image drops its `USER 472` line so the
+  entrypoint can write to the root-owned state mount, and drops to uid 472 itself before
+  starting Grafana.
+
+  **The copy is taken with SQLite's online backup API, not `cp`.** `cp` was written
+  first and is unsound at any guard: it is check-then-act, so a write transaction
+  starting mid-copy mixes pre- and post-transaction pages. Measured on this image with
+  the `grafana.db-journal` guard in place, `cp` produced a database that failed `PRAGMA
+  integrity_check` in **2 of 118 attempts (~1.7%) at Grafana's idle write rate**, and in
+  6 of 18 and 17 of 25 attempts under load; `sqlite3 <db> ".backup <dest>"` measured
+  **12 of 12 clean** against a continuous writer. The journal guard is gone with the
+  `cp` — it implied a safety it never provided. `sqlite3` is installed in the deploy
+  image for this, and if it is ever absent at runtime the entrypoint disables
+  persistence loudly instead of silently falling back to `cp`.
+
+  **Both directions are integrity-checked, and a bad copy is quarantined rather than
+  restored.** A snapshot only replaces the copy on the volume when `PRAGMA
+  integrity_check` on it returns exactly `ok`, and the copy is checked again before it
+  is restored. One that fails is renamed aside to `grafana.db.corrupt-<UTC timestamp>`,
+  logged with that path, and left for the next sound snapshot to replace — previously
+  only `cp`'s exit status was checked, so a malformed copy was restored into a Grafana
+  that crash-looped and then restored the same file again on every boot.
+  `QUIXLAKE_SKIP_RESTORE=true` skips the restore entirely and starts from an empty
+  database, for a copy that passes the check but still wedges Grafana.
+
+  **`GF_SECURITY_SECRET_KEY` is now a required deployment variable** (`app.yaml`).
+  Grafana encrypts `secureJsonData` with it, and its built-in default is published in
+  `conf/defaults.ini` — in review, the plaintext lakehouse token was recovered from a
+  real `grafana.db` using nothing but that public key. Before this change the database
+  never left the container; now a durable copy sits on a shared state volume, so the
+  default key is no longer survivable. It **must be set before the first boot**:
+  changing it later leaves secrets encrypted with the old key undecryptable and the
+  datasource token has to be re-entered. The entrypoint warns when it is unset with
+  persistence on, and does not exit — a fatal check on a missing variable has taken
+  this deployment down before.
+
+  **The backup lock is taken per tick.** It used to be taken once, so a replica that
+  lost the race — any second replica, or the old container during an overlapping
+  redeploy — never backed up again for its whole life while the boot log had already
+  promised a copy every ten seconds, and its edits were lost. A tick that cannot take
+  the lock now copies anyway and logs it once, so no arrangement of locks can stop this
+  container persisting.
+
+  Finally, a documentation consequence: `GF_SECURITY_ADMIN_PASSWORD` is applied only
+  when Grafana *creates* the admin user, so with a persistent database changing that
+  Quix secret has no effect on later boots and a leaked admin password cannot be
+  rotated that way. Rotate in the Grafana UI or with `grafana cli admin
+  reset-admin-password`; `deploy/README.md` documents it.
+
+  **Review hardening, applied before merge.** Every `sqlite3` call now carries
+  `-cmd '.timeout 10000'` and the backup loop sleeps before its first tick, so a
+  snapshot can no longer take a read lock during Grafana's startup migration and
+  provisioning burst and turn its writes into `database is locked`. Seeding is decided
+  by querying the restored database for `data_source.uid = 'quixlakehouse'` rather than
+  by "was anything restored": a snapshot taken in the seconds before Grafana committed
+  that row restored clean and left the deployment with no datasource, permanently — and
+  so did deleting it in the UI. `QUIXLAKE_SKIP_RESTORE` now renames the copy aside to
+  `grafana.db.skipped-<UTC timestamp>` instead of leaving the backup loop to destroy the
+  very file the operator chose not to restore, ten seconds later. Stale
+  `-journal`/`-wal`/`-shm` files are removed before the restored database is moved into
+  place, so a hot journal left by a previous container cannot roll foreign pages into
+  it. Quarantined copies are pruned to the newest three, on a volume the README
+  provisions at 1 GB.
+
+  **The `flock` is now probed rather than assumed.** It is taken on the same CIFS volume
+  this design documents as unable to grant SQLite's locks, so the entrypoint tests once
+  at startup whether the lock is both grantable and enforced between processes. Where it
+  is not, it says so plainly and keeps backing up **without** it — otherwise every tick
+  would have exited "held by another container" and backed up nothing at all, while the
+  boot log promised a copy every ten seconds. The lock is **best effort** in both
+  directions: a tick that cannot take one still takes the backup. Two containers sharing
+  one volume can still overwrite each other's snapshots, which is why the supported
+  configuration is a single replica and `deploy/README.md` now says exactly that.
+
+  A failing backup is re-announced roughly every 30 minutes with its consecutive-failure
+  count instead of once for the life of the container, and the recovery line reports how
+  many ticks were missed — a volume that fills at hour three used to be announced once,
+  hours after anyone was still reading. The staged snapshot, the `.tmp` on the volume
+  and the restored live database are `chmod 600`, each being a full database carrying
+  the encrypted token (a CIFS mount may ignore the mode, which is precisely why
+  `GF_SECURITY_SECRET_KEY` is the control that travels with the file). Values
+  substituted into the datasource template are escaped for both `sed` and YAML and the
+  scalars are quoted, so a `#`, `&` or backslash in the token or URL no longer mangles
+  the file silently. And a tick whose database is unchanged since the last copy — same
+  size and mtime — is skipped outright rather than making three full passes over the
+  file for nothing.
+
+  **The container-ownership marker was removed before merge, and with it the failure it
+  caused.** `.backup.owner` was meant to stop an outgoing container overwriting an
+  incoming one's edits, but the lock probe consulted it to tell "lock held by a peer"
+  apart from "lock unsupported", and the marker is never deleted — so on a share where
+  `flock` errors, the second deployment read a marker naming the *previous, dead*
+  container, concluded it was contended, switched ticks to a lock it cannot take, and
+  backed up **nothing for the life of the pod**: precisely the outcome the probe existed
+  to prevent, announced in one log line. It also had no staleness bound, so a marker
+  written by a node with a fast clock silently stopped a *sole* container from backing
+  up until someone deleted the file by hand. Replaced by an honest constraint — **run a
+  single replica; the state volume is not safe for concurrent writers** — and a lock
+  policy that cannot disable backups: `flock` is best effort, a tick that cannot take it
+  copies anyway and logs once.
+
+  Four further fixes from the same review. The volume-side staging path is now
+  **per host** (`grafana.db.tmp.<hostname>`): with locking unsupported — the documented
+  normal case on CIFS — two containers `cp`-ing into one shared `.tmp` interleave from
+  offset 0 and each renames the mixed result over `grafana.db`, past an integrity check
+  that only ever ran on the local snapshot; stale staging files are swept at boot. Every
+  path that announces "starting with an empty database" — `QUIXLAKE_SKIP_RESTORE`, a
+  quarantined corrupt copy, an unreadable one — now **deletes the container-local
+  database** and its `-journal`/`-wal`/`-shm` siblings, because a `docker restart`
+  reuses the writable layer and Grafana was reopening the very database being escaped
+  while the only good copy sat renamed aside. When the datasource is *not* re-seeded,
+  the provisioning directory is **emptied**: the file rendered on a previous boot was
+  still there for Grafana to re-apply, overwriting the UI-edited URL and token this
+  whole change exists to preserve. And CR/LF are stripped from the URL and token where
+  they are resolved — a pasted trailing newline reached `sed` as an unterminated `s`
+  command and, under `set -eu`, the container never started.
+
+  **Round-three review fixes**, four defects in the deployment shim, two of them
+  reproduced against the real shape.
+
+  The runtime image installs **`coreutils`**, for GNU `timeout` alone. Every copy in the
+  backup loop is wrapped in `timeout`, and `/usr/bin/timeout` in this base image is a
+  **BusyBox symlink**: the applet forks a watchdog and leaves it behind, while the
+  entrypoint `exec`s Grafana, so PID 1 is a Go binary that reaps nothing. The three calls
+  per tick therefore leaked three unreapable zombies every ten seconds — 60 in 12 seconds
+  when measured — filling the PID table in roughly four hours under a 4096-pid cgroup
+  limit, after which `fork()` fails, the backup loop stops and persistence ends silently
+  while Grafana carries on serving. It was a regression introduced by this change: before
+  it there was no `timeout`, no background loop, and PID 1 was the shell, which reaps.
+  GNU `timeout` waits in-process and orphans nothing — the same probe measured 0 zombies,
+  holding.
+
+  **The `grafana.db.previous` rescue slot is now write-once, and is not used on the happy
+  path.** Moving the live database aside instead of deleting it was also called from the
+  *successful restore* path, which runs on every normal boot — so boot N rescued the good
+  database, Grafana created an empty one, and boot N+1 restored cleanly and overwrote the
+  rescue with that empty database. Real user data was lost on the second restart, which
+  is the first thing anyone tries. The successful-restore path now deletes outright,
+  since the file it removes is superseded by a copy that has just passed
+  `integrity_check`; only the three failure paths rescue, they never overwrite an
+  existing `grafana.db.previous`, and they log the path of the rescue they are keeping
+  when they decline. The `-journal`, `-wal` and `-shm` files now move **with** the
+  database rather than being deleted after it, so a rescue is no longer separated from
+  its hot journal and left failing its own integrity check.
+
+  **`QUIXLAKE_SKIP_RESTORE` now turns persistence OFF for the boot** instead of leaving
+  backups on. With backups on, every boot with the flag still set wrote a fresh copy and
+  quarantined it on the next one, and quarantine keeps only the newest three — so the
+  single copy holding real data aged out on the fourth boot, measured across five. The
+  flag is a Quix deployment variable: it survives redeploys and stays set until someone
+  clears it. No backups means no new copy, nothing to quarantine on the next boot and
+  nothing that can push the good one out; the existing copy is still renamed aside, now
+  so that the first boot without the flag does not restore the database that was escaped.
+  The boot log states twice that persistence is off and how to restore it, and
+  `QUIXLAKE_SKIP_RESTORE` and `QUIXLAKE_FORCE_PROVISION` are declared in `app.yaml` as
+  optional single-boot flags, so the portal shows an operator that one is still set.
+
+  **The admin-password recovery command was wrong.** There is no `grafana-cli` binary in
+  the Grafana image — the only binary is `grafana` — so the working form is `grafana cli
+  admin reset-admin-password`. It matters because that is the documented route for a
+  password which, now that the database persists, cannot be rotated through Quix at all.
+  Corrected in `app.yaml` and `deploy/README.md`.
+
+### Changed
+
+- **Go toolchain 1.27.1 → 1.26.6**, and the deploy image `golang:1.27-alpine` back to
+  `golang:1.26-alpine`. A version going *down* is deliberate. Grafana fixed
+  plugin-validator issue #827 in **v0.49.0**, and that image is pinned to Go **1.26.6**
+  with `GOTOOLCHAIN=local` — it cannot switch toolchains, so a `go.mod` declaring
+  anything above 1.26.6 is refused outright and the catalog scan fails before it reads a
+  line of our source. 1.26.6 is the one value that works: the image refuses anything above it, and
+  1.26.5 or lower builds a binary whose stdlib carries advisories that govulncheck's
+  binary scan reports (GO-2026-5026, -5942, -5972, -6088..-6091, -6218). The floor
+  `grafana-plugin-sdk-go v0.296.4` asks for is **1.26.5**, so 1.26.6 sits exactly **at**
+  the image's ceiling with **no headroom** — it is not under it. If Grafana ships a
+  validator image built on an older Go patch, the validator gate and the release job go
+  red with no commit of ours; that is a known fragility of pinning the image to
+  `:latest` with `govulncheck-scan-failed` armed as an error. Verified against the
+  released image: `go 1.26.8` fails with `go.mod requires go >= 1.26.8 (running go
+  1.26.6; GOTOOLCHAIN=local)`, `go 1.26.6` passes with only the expected
+  `unsigned-plugin` and gosec G115 warnings. Because the scan now runs, the
+  `govulncheck-scan-failed` demotion the 0.1.0 entry describes is reverted to **error**
+  in `.github/plugin-validator.yaml` as part of the same change. No code changed with
+  it. (sc-74412)
+
+## 0.1.0 - 2026-09-10
 
 ### Changed
 

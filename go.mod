@@ -1,6 +1,6 @@
 module github.com/quix/quixlakehouse
 
-go 1.27.1
+go 1.26.6
 
 require (
 	github.com/apache/arrow-go/v18 v18.7.0

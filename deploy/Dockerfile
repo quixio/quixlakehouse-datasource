@@ -25,7 +25,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # The plugin binary name comes from `executable` in src/plugin.json; the SDK's mage
 # targets read it, so it is not duplicated here.
-FROM golang:1.27-alpine AS backend
+FROM golang:1.26-alpine AS backend
 RUN apk add --no-cache git
 WORKDIR /build
 COPY go.mod go.sum ./
@@ -45,6 +45,26 @@ ENV PLUGIN_ID=${PLUGIN_ID}
 
 USER root
 
+# sqlite3 (3.53.4 in this base image) is a hard dependency of the entrypoint's backup
+# loop, not a convenience. A plain `cp` of the live grafana.db is check-then-act and
+# produces torn copies -- measured at ~1.7% even at Grafana's idle write rate, and far
+# worse under load -- which then restore into a Grafana that crash-loops. `sqlite3 <db>
+# ".backup <dest>"` uses SQLite's online backup API, which is safe against concurrent
+# writers, and it is the only such mechanism available in this image. The same binary
+# runs the PRAGMA integrity_check that gates every copy in both directions. Without it
+# the entrypoint disables persistence rather than falling back to cp.
+#
+# coreutils is here for ONE binary: GNU timeout, which replaces the busybox applet the
+# base image symlinks at /usr/bin/timeout. BusyBox's timeout cannot be used here. It
+# forks a watchdog child and leaves it behind, and the entrypoint execs Grafana, so PID
+# 1 is a Go binary that reaps nothing -- every orphaned watchdog stays a zombie forever.
+# The backup loop makes three timeout calls every 10 seconds, so the PID table fills in
+# hours, fork() then fails, and the backup loop dies silently while Grafana keeps
+# serving: persistence off, with no error anywhere. Measured in this image: 60 zombies
+# in 12 seconds with the applet, 0 with coreutils. GNU timeout waits in-process and
+# orphans nothing.
+RUN apk add --no-cache sqlite coreutils
+
 COPY --from=frontend /build/dist /var/lib/grafana/plugins/${PLUGIN_ID}
 COPY --from=backend  /build/dist /var/lib/grafana/plugins/${PLUGIN_ID}
 
@@ -54,12 +74,33 @@ RUN chmod +x /usr/local/bin/quix-entrypoint.sh \
     && chmod +x /var/lib/grafana/plugins/${PLUGIN_ID}/gpx_* \
     # The entrypoint renders provisioning at boot. Grafana runs as uid 472 and cannot
     # write to /etc/grafana, so render into a directory it owns and point Grafana there
-    # via GF_PATHS_PROVISIONING rather than fighting permissions.
+    # via GF_PATHS_PROVISIONING rather than fighting permissions. The rendered
+    # datasource file carries the token and is chmod 600, so the entrypoint also chowns
+    # it to 472 -- it writes as root and Grafana reads as 472.
     && mkdir -p /var/lib/grafana/provisioning/datasources \
     && chown -R 472:0 /var/lib/grafana/provisioning /var/lib/grafana/plugins
 
-USER 472
+# Deliberately NO `USER 472`. The entrypoint has to start as root, because the Quix
+# state volume is mounted owned by root and only root can create the Grafana
+# subdirectory on it and copy the database in and out. It drops to uid 472 itself
+# immediately before starting Grafana, so the server still runs unprivileged -- see
+# the su invocation in deploy/entrypoint.sh.
 
+# GF_PATHS_DATA is deliberately NOT set: Grafana's SQLite database must stay at the
+# image default, on container-local disk. The state volume is CIFS-backed and cannot
+# grant the exclusive locks SQLite needs, so a database opened there hangs on its first
+# migration with SQLITE_BUSY. Only a *copy* of the file goes to the volume, taken by
+# the entrypoint. For the same reason there is no GF_DATABASE_* here either.
+#
+# GF_PATHS_PLUGINS is NOT set and must NOT be pointed at the state volume. The
+# quix-samples Grafana image does exactly that; copying it here would break this image,
+# because our plugin is baked into /var/lib/grafana/plugins at build time and
+# repointing the variable would hide it behind an empty volume.
+#
+# GF_PATHS_PROVISIONING stays on the image filesystem: the entrypoint writes it at boot
+# from the environment and from the baked templates, so it is derived state and needs
+# no volume. (The datasource within it is seeded only when no database was restored --
+# see deploy/entrypoint.sh.)
 ENV GF_PATHS_PROVISIONING=/var/lib/grafana/provisioning \
     # Unsigned is fine on self-hosted Grafana, which is what a Quix deployment is.
     # This is precisely why deploying here does not wait on Grafana Labs signing.

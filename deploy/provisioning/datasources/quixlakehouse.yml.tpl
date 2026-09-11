@@ -1,15 +1,27 @@
-# Datasource provisioning template. Rendered at boot by deploy/entrypoint.sh, which
-# replaces the __PLACEHOLDER__ tokens from environment variables.
+# Datasource provisioning template. Rendered by deploy/entrypoint.sh, which replaces
+# the __PLACEHOLDER__ tokens from environment variables.
 #
-# Provisioned rather than configured by hand so that a redeploy always comes back
-# with a working datasource -- Grafana's SQLite database is not persisted in a Quix
-# deployment, so anything created through the UI is lost on restart.
+# Every placeholder that carries a value from the environment sits inside a
+# SINGLE-QUOTED YAML scalar, and the entrypoint escapes each value for both sed and
+# YAML before substituting it (see render_escape there). Do not unquote them: a token
+# or URL containing '#', ': ', or a leading '{', '[', '*' or '!' would otherwise parse
+# as something other than a string, or disappear into a comment.
+#
+# Rendered only when the database the entrypoint is about to hand Grafana has no
+# datasource with this uid -- in practice the first boot of a given state volume, plus
+# the recovery cases where the row was deleted in the UI or QUIXLAKE_FORCE_PROVISION is
+# set. The entrypoint copies Grafana's SQLite database out to that volume while it runs
+# and restores it before Grafana starts, so on every later boot the datasource already
+# exists, with whatever was typed into the UI, and this template is not rendered at all.
+# The environment variables SEED the datasource; they do not keep re-applying to it.
+# (With no state volume there is never anything to restore, so it is rendered every boot
+# and UI edits do not survive -- see deploy/README.md.)
 apiVersion: 1
 
 datasources:
   - name: QuixLakeHouse
     # Must equal the plugin id, or Grafana logs "datasource type not found".
-    type: __PLUGIN_ID__
+    type: '__PLUGIN_ID__'
     uid: quixlakehouse
     access: proxy
     isDefault: true
@@ -18,7 +30,7 @@ datasources:
     # This is Quix__Lakehouse__Query__Url: the PUBLIC lh-query host. Note it is NOT
     # CATALOG_URL or QUIX_LAKE_URL, which are legacy aliases for the in-cluster
     # Iceberg catalog and will not serve /query.
-    url: __QUIXLAKE_URL__
+    url: '__QUIXLAKE_URL__'
     jsonData:
       unionByName: true
       timeoutSeconds: 60
@@ -26,14 +38,15 @@ datasources:
       # Encrypted by Grafana at rest and only ever decrypted for the backend process;
       # the browser never receives it back. This is the security gain over the
       # frontend-only JSON datasource it replaces.
-      token: __QUIXLAKE_TOKEN__
+      token: '__QUIXLAKE_TOKEN__'
     # Editable so the URL and token can be corrected from Connections > Data Sources
-    # without a redeploy. Provisioning still SEEDS the values from the environment,
-    # because a Quix deployment has no persisted Grafana database to create them in.
+    # without a redeploy, and those edits now survive: they live in the Grafana
+    # database, which the entrypoint copies to the state volume and restores on boot.
+    # Provisioning only seeds the initial values from the environment.
     #
-    # Known consequence, and the reason this was false: Grafana re-applies
-    # provisioning at every boot, so a UI edit survives only until the container
-    # restarts. Making edits durable needs a persisted Grafana DB (GF_DATABASE_* to
-    # Postgres) -- the state mount is not an option here, since the entrypoint runs as
-    # uid 472 and cannot take ownership of it.
+    # Two caveats worth knowing before relying on it. The state volume has to be
+    # enabled on the deployment, or there is nowhere to copy to and the old
+    # lost-on-restart behaviour is what you get. And QUIXLAKE_FORCE_PROVISION=true
+    # re-renders this file, deliberately overwriting UI edits -- it is the way back
+    # from a datasource edited into a broken state.
     editable: true

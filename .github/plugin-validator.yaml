@@ -4,39 +4,29 @@
 # Scope: this file shapes OUR CI run only. Grafana enforces its own config when it
 # validates a catalog submission and never reads this one. Their shipped
 # config/pipeline.yaml is exactly the `global` block below with no analyzers section, so
-# that is where we start, and we change two rules.
+# that is where we start, and we pin two rules to `error`.
 #
-# Change 1 -- govulncheck-issue-found, warning -> error. It ships as a `warning`, but the
-# 2026-09-07 submission report carried 35 stdlib vulnerabilities behind that single
-# warning (the toolchain was Go 1.25.5, already EOL then; we are on Go 1.27.1 now, see
+# govulncheck-issue-found -- an escalation, warning -> error. It ships as a `warning`, but
+# the 2026-09-07 submission report carried 35 stdlib vulnerabilities behind that single
+# warning (the toolchain was Go 1.25.5, already EOL then; we are on Go 1.26.6 now, see
 # go.mod), and a warning nobody reads is exactly how the Trivy job in
 # .github/workflows/ci.yml became decorative.
 #
-# Change 2 -- govulncheck-scan-failed, error -> warning. It ships as an `error`, and this
-# is the "unfixable upstream finding wedges CI" case the note below anticipated. The
-# validator image's govulncheck binary is built with Go 1.26 while our go.mod now
-# requires 1.27, so its SOURCE scan aborts with "uses version go1.26 of the
-# source-processing packages but runs version go1.27 of `go list`" before it inspects
-# anything. That is grafana/plugin-validator issue #827; PR #851 pins govulncheck's
-# toolchain in the image and merged 2026-09-09, but no release carries it yet (latest is
-# v0.45.10). Grafana's own review runner is on Go 1.27 and hits the same wall, so this is
-# not a skew we could dodge by staying on 1.26 -- see the header of
-# .github/actions/validate-plugin/action.yml.
+# govulncheck-scan-failed -- pinned to `error`, which is also its shipped default. History
+# worth one paragraph: between 2026-09-10 and the release of plugin-validator v0.49.0 it
+# was demoted to a warning here, because the image's govulncheck was a Go 1.26 build that
+# aborted the SOURCE scan of our tree before inspecting anything
+# (grafana/plugin-validator issue #827, fixed by PR #851). v0.49.0 ships that fix, and we
+# now declare a Go version its pinned toolchain can load, so the source scan runs and the
+# rule is restored. The pin is written out rather than inherited so that an upstream
+# change of default cannot quietly turn it back into a warning -- a scan that fails for a
+# reason genuinely ours, a malformed go.mod or a module that will not resolve, must stop
+# CI.
 #
-# The trade-off is real: a scan failure that is genuinely OURS -- a malformed go.mod, a
-# module that will not resolve -- is demoted to a warning too, and CI stays green through
-# it. That is tolerable only because govulncheck-issue-found above stays `error`, so an
-# actual vulnerability still blocks, and because the analyzer is NOT disabled: the binary
-# scan inside the zip is unaffected by the source-scan bug and still runs.
-#
-# REVERT TRIGGER: restore this rule to `error` as soon as a validator image built after
-# 2026-09-09 is published. Check by inspecting the image's `FROM golang:` line and
-# running `go version` inside it -- 1.27 or newer means #851 has shipped and the
-# downgrade is only hiding real failures from us.
-#
-# If another unfixable upstream finding ever wedges CI on a rule here, lower it the same
-# way and record why in this comment. Do not silence anything by deleting the analyzers
-# block, and do not reach for -analyzer filtering in the action.
+# If an unfixable upstream finding ever wedges CI on a rule here, lower it the same way --
+# and record in this comment both why, and the observable event that reverts it. Do not
+# silence anything by deleting the analyzers block, and do not reach for -analyzer
+# filtering in the action.
 
 global:
   enabled: true
@@ -49,4 +39,4 @@ analyzers:
       govulncheck-issue-found:
         severity: error
       govulncheck-scan-failed:
-        severity: warning
+        severity: error
